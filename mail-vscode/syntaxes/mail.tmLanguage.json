@@ -43,7 +43,7 @@
     },
     "keywords-declaration": {
       "name": "keyword.declaration.mail",
-      "match": "\\b(schema|tool|agent|workflow)\\b"
+      "match": "\\b(import|schema|tool|agent|workflow)\\b"
     },
     "keywords-control": {
       "name": "keyword.control.mail",

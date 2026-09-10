@@ -2,6 +2,10 @@ using Mail.Contracts;
 
 namespace Mail.Compiler.Ast;
 
+// ── Import declarations ───────────────────────────────────────────────────────
+
+public sealed record ImportDecl(string Path, string Alias, SourceLocation Location);
+
 // ── Type references ────────────────────────────────────────────────────────────
 
 public enum PrimitiveKind { String, Bool, Int, Decimal }
@@ -9,6 +13,7 @@ public enum PrimitiveKind { String, Bool, Int, Decimal }
 public abstract record TypeRef;
 public sealed record PrimitiveTypeRef(PrimitiveKind Kind) : TypeRef;
 public sealed record NamedTypeRef(string Name, SourceLocation Location) : TypeRef;
+public sealed record QualifiedNameTypeRef(string Alias, string Name, SourceLocation Location) : TypeRef;
 public sealed record ListTypeRef(TypeRef ElementType, SourceLocation Location) : TypeRef;
 public sealed record NullableTypeRef(TypeRef Inner, SourceLocation Location) : TypeRef;
 
@@ -81,6 +86,15 @@ public sealed record AgentBody(
     Expr? InputExpr,
     IReadOnlyList<string> ContextNames) : StepBody;
 
+public sealed record WorkflowCallBody(
+    string Alias,
+    string WorkflowName,
+    Expr InputExpr,
+    SourceLocation Location) : StepBody
+{
+    public string? TargetName { get; init; }
+}
+
 // Step-level if/else — both branches required, each produces exactly one value
 public sealed record ConditionalStepBody(
     Expr Condition,
@@ -143,4 +157,6 @@ public sealed record WorkflowDecl(
 
 // ── Program ───────────────────────────────────────────────────────────────────
 
-public sealed record ProgramNode(IReadOnlyList<Declaration> Declarations);
+public sealed record ProgramNode(
+    IReadOnlyList<ImportDecl> Imports,
+    IReadOnlyList<Declaration> Declarations);

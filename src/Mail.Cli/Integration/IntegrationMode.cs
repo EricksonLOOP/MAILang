@@ -145,8 +145,9 @@ internal static class IntegrationMode
     {
         try
         {
-            var source = await File.ReadAllTextAsync(path).ConfigureAwait(false);
-            var (plan, diagnostics) = Mail.Compiler.Compiler.Compile(source, path);
+            var absPath = Path.GetFullPath(path);
+            var (plan, diagnostics) = Mail.Compiler.Compiler.CompileFile(
+                absPath, new Mail.Compiler.FilesystemSourceResolver());
 
             if (plan is null || diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
             {
@@ -222,8 +223,9 @@ internal static class IntegrationMode
         {
             try
             {
-                var source       = await File.ReadAllTextAsync(path, linked.Token).ConfigureAwait(false);
-                var (plan, diag) = Mail.Compiler.Compiler.Compile(source, path);
+                var absPath      = Path.GetFullPath(path);
+                var (plan, diag) = Mail.Compiler.Compiler.CompileFile(
+                    absPath, new Mail.Compiler.FilesystemSourceResolver());
 
                 if (plan is null || diag.Any(d => d.Severity == DiagnosticSeverity.Error))
                 {
@@ -291,7 +293,7 @@ internal static class IntegrationMode
                     writer.WriteMessage("event", new EventMsg(execId, new EventDto(
                         ev.Kind, ev.Message,
                         ev.Timestamp.ToString("O"),
-                        ev.OperationId, ev.CallId, ev.DurationMs)));
+                        ev.OperationId, ev.CallId, ev.DurationMs, ev.ParentOperationId, ev.ActivationId)));
 
                 if (result.Succeeded && result.Output is not null)
                 {

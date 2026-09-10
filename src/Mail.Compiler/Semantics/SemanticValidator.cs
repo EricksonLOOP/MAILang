@@ -4,12 +4,21 @@ using System.Collections.Immutable;
 
 namespace Mail.Compiler.Semantics;
 
-public sealed class SemanticValidator(string filePath)
+public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<string, WorkflowDecl>? resolvedWorkflows = null)
 {
     private readonly List<Diagnostic> _errors = [];
 
     public (ValidatedPlan? Plan, IReadOnlyList<Diagnostic> Errors) Validate(ProgramNode program)
     {
+        // Single-file path does not support imports; use Compiler.CompileFile() instead.
+        if (program.Imports.Count > 0)
+        {
+            Error("MAIL-SEM",
+                "Files with 'import' statements must be compiled with Compiler.CompileFile().",
+                program.Imports[0].Location);
+            return (null, _errors);
+        }
+
         var schemas  = new Dictionary<string, SchemaDecl>(StringComparer.Ordinal);
         var enums    = new Dictionary<string, EnumDecl>(StringComparer.Ordinal);
         var tools    = new Dictionary<string, ToolDecl>(StringComparer.Ordinal);
@@ -154,13 +163,18 @@ public sealed class SemanticValidator(string filePath)
         {
             // output binding represents the finish value — we can't name it here without knowing type,
             // so validate in same env as finish (output binding validation is a runtime concern for require output)
-            var cat = InferType(workflow.RequireOutput, envAfterItems, schemas, enums);
+            var cat = InferType(workflow.RequireOutput,
+                envAfterItems.Extend("output", TypeRefToBindingInfo(workflow.OutputType, schemas, enums)), schemas, enums);
             if (cat != ExprCategory.Bool)
                 Error("MAIL-SEM", $"'require output' expression in workflow '{workflow.Name}' must be Bool.", workflow.Location);
         }
 
         if (_errors.Any(d => d.Severity == DiagnosticSeverity.Error))
             return (null, _errors);
+
+        // Single workflow is the entry; expose it in Workflows dict by its simple name.
+        var workflowsDict = ImmutableDictionary<string, WorkflowDecl>.Empty
+            .Add(workflow.Name, workflow);
 
         return (new ValidatedPlan(
             program,
@@ -169,6 +183,7 @@ public sealed class SemanticValidator(string filePath)
             tools.ToImmutableDictionary(),
             agents.ToImmutableDictionary(),
             workflow,
+            workflowsDict,
             filePath), _errors);
     }
 
@@ -221,7 +236,11 @@ public sealed class SemanticValidator(string filePath)
     private static SchemaDecl SyntheticSchema(string name, IReadOnlyList<FieldDecl> fields) =>
         new(name, fields, new SourceLocation("synthetic", 0, 0));
 
-    private static BindingInfo TypeRefToBindingInfo(
+    private static BindingInfo TypeRefToBindingInfo(TypeRef typeRef,
+        Dictionary<string, SchemaDecl> schemas, Dictionary<string, EnumDecl>? enums = null) =>
+        TypeRefToBindingInfoCore(typeRef, schemas, enums) with { DeclaredType = typeRef };
+
+    private static BindingInfo TypeRefToBindingInfoCore(
         TypeRef typeRef,
         Dictionary<string, SchemaDecl> schemas,
         Dictionary<string, EnumDecl>? enums = null)
@@ -250,6 +269,9 @@ public sealed class SemanticValidator(string filePath)
             if (enums?.ContainsKey(named.Name) == true)
                 return new BindingInfo(ExprCategory.Enum, null);
         }
+
+        if (typeRef is QualifiedNameTypeRef)
+            return new BindingInfo(ExprCategory.Schema, null); // resolved at multi-file level
 
         return new BindingInfo(ExprCategory.Schema, null); // unknown — allow gracefully
     }
@@ -402,7 +424,7 @@ public sealed class SemanticValidator(string filePath)
     }
 
     // Carries loop parameter declarations and output type for continue/break validation
-    private sealed record LoopContext(
+    internal sealed record LoopContext(
         IReadOnlyList<LoopParam> Params,
         TypeRef OutputType,
         Dictionary<string, SchemaDecl> Schemas,
@@ -451,6 +473,16 @@ public sealed class SemanticValidator(string filePath)
                             $"Binding '{ctx}' is not available at this step.", loc);
                 return TypeRefToBindingInfo(agent.OutputType, schemas, enums);
 
+            case WorkflowCallBody wcb:
+                var key = wcb.TargetName ?? $"{wcb.Alias}.{wcb.WorkflowName}";
+                if (resolvedWorkflows is null || !resolvedWorkflows.TryGetValue(key, out var child))
+                {
+                    Error(DiagnosticCodes.SymbolNotFound, $"Workflow '{key}' requires a resolved import; use CompileFile().", wcb.Location);
+                    return new BindingInfo(ExprCategory.Schema, null);
+                }
+                InferType(wcb.InputExpr, env, schemas, enums);
+                CheckWorkflowInput(wcb.InputExpr, child.InputType, env, schemas, enums, wcb.Location);
+                return TypeRefToBindingInfo(child.OutputType, schemas, enums);
             case ConditionalStepBody csb:
                 var cat = InferType(csb.Condition, env, schemas, enums);
                 if (cat != ExprCategory.Bool)
@@ -665,6 +697,12 @@ public sealed class SemanticValidator(string filePath)
                     Error(DiagnosticCodes.SchemaNotDeclared,
                         $"Type '{nr.Name}' is not declared.", nr.Location);
                 break;
+            case QualifiedNameTypeRef qr:
+                // Single-file path: qualified names require multi-file compilation.
+                Error("MAIL-SEM",
+                    $"Qualified name '{qr.Alias}.{qr.Name}' requires multi-file compilation. " +
+                    "Use Compiler.CompileFile() with an ISourceResolver.", qr.Location);
+                break;
             case ListTypeRef lr:
                 ValidateTypeRef(lr.ElementType, schemas, enums);
                 break;
@@ -725,6 +763,32 @@ public sealed class SemanticValidator(string filePath)
         }
     }
 
+    internal static bool SameType(TypeRef? a, TypeRef? b) => (a, b) switch
+    {
+        (PrimitiveTypeRef x, PrimitiveTypeRef y) => x.Kind == y.Kind,
+        (NamedTypeRef x, NamedTypeRef y) => x.Name == y.Name,
+        (ListTypeRef x, ListTypeRef y) => SameType(x.ElementType, y.ElementType),
+        (NullableTypeRef x, NullableTypeRef y) => SameType(x.Inner, y.Inner),
+        _ => false
+    };
+
+    private TypeRef? ExpressionType(Expr expr, TypeEnv env, Dictionary<string, SchemaDecl> schemas) => expr switch
+    {
+        NameExpr n when env.TryGet(n.Name, out var info) => info.DeclaredType,
+        FieldAccessExpr f => ResolveExprSchema(f.Target, env, schemas)?.Fields.FirstOrDefault(x => x.Name == f.Field)?.Type,
+        StringLiteralExpr => new PrimitiveTypeRef(PrimitiveKind.String),
+        BoolLiteralExpr or BinaryExpr or NotExpr => new PrimitiveTypeRef(PrimitiveKind.Bool),
+        IntLiteralExpr => new PrimitiveTypeRef(PrimitiveKind.Int),
+        ConditionalExpr c when SameType(ExpressionType(c.Then, env, schemas), ExpressionType(c.Else, env, schemas)) => ExpressionType(c.Then, env, schemas),
+        _ => null
+    };
+
+    private void CheckWorkflowInput(Expr expr, TypeRef expected, TypeEnv env,
+        Dictionary<string, SchemaDecl> schemas, Dictionary<string, EnumDecl> enums, SourceLocation loc)
+    {
+        if (!SameType(ExpressionType(expr, env, schemas), expected))
+            Error(DiagnosticCodes.ArgumentTypeMismatch, "Subworkflow input must match its declared type (including module identity).", loc);
+    }
     private void Error(string code, string message, SourceLocation loc) =>
         _errors.Add(new Diagnostic(DiagnosticSeverity.Error, code, message, loc));
 }
@@ -733,7 +797,7 @@ public sealed class SemanticValidator(string filePath)
 
 internal enum ExprCategory { String, Bool, Int, Decimal, Schema, List, Enum }
 
-internal sealed record BindingInfo(ExprCategory Category, SchemaDecl? Schema);
+internal sealed record BindingInfo(ExprCategory Category, SchemaDecl? Schema, TypeRef? DeclaredType = null);
 
 internal sealed class TypeEnv
 {
@@ -762,7 +826,7 @@ internal sealed class TypeEnv
             if (other._bindings.TryGetValue(name, out var otherInfo) && info.Category == otherInfo.Category)
             {
                 var schema = ReferenceEquals(info.Schema, otherInfo.Schema) ? info.Schema : null;
-                d[name] = new BindingInfo(info.Category, schema);
+                d[name] = new BindingInfo(info.Category, schema, SemanticValidator.SameType(info.DeclaredType, otherInfo.DeclaredType) ? info.DeclaredType : null);
             }
         }
         return new TypeEnv(d);

@@ -5,6 +5,10 @@ public sealed record ExecutionLimits(
     int MaxModelCallsPerAgent,
     TimeSpan Timeout)
 {
+    public int MaxTotalModelCalls { get; init; } = 100;
+    public int MaxTotalToolAttempts { get; init; } = 1000;
+    public int MaxTotalActivations { get; init; } = 1000;
+
     public static ExecutionLimits Default => new(10, 5, TimeSpan.FromSeconds(30));
 
     public static ExecutionLimits Validated(int maxToolCalls, int maxModelCalls, TimeSpan timeout)

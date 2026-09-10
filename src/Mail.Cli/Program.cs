@@ -41,8 +41,9 @@ var config = LoadConfig();
 var providerName = providerOverride ?? config.Provider;
 
 // ── Compile ───────────────────────────────────────────────────────────────────
-var source = await File.ReadAllTextAsync(filePath);
-var (plan, diagnostics) = Mail.Compiler.Compiler.Compile(source, filePath);
+var absFilePath = Path.GetFullPath(filePath);
+var (plan, diagnostics) = Mail.Compiler.Compiler.CompileFile(
+    absFilePath, new Mail.Compiler.FilesystemSourceResolver());
 
 foreach (var d in diagnostics)
     Console.Error.WriteLine(d.ToString());
@@ -320,4 +321,3 @@ file sealed class CliTokenEchoSimulator : IModelProvider
             Text: JsonSerializer.Serialize(new { token })));
     }
 }
-

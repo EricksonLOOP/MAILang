@@ -12,6 +12,7 @@ public sealed class Lexer(string source, string filePath)
 
     private static readonly Dictionary<string, TokenKind> Keywords = new(StringComparer.Ordinal)
     {
+        ["import"]   = TokenKind.Import,
         ["schema"]   = TokenKind.Schema,
         ["tool"]     = TokenKind.Tool,
         ["agent"]    = TokenKind.Agent,

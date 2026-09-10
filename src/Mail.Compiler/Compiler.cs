@@ -7,6 +7,10 @@ namespace Mail.Compiler;
 
 public static class Compiler
 {
+    /// <summary>
+    /// Compiles a single-file MAIL program from source text.
+    /// Files with 'import' statements must use <see cref="CompileFile"/> instead.
+    /// </summary>
     public static (ValidatedPlan? Plan, IReadOnlyList<Diagnostic> Diagnostics) Compile(
         string source,
         string filePath)
@@ -31,6 +35,15 @@ public static class Compiler
 
         return (plan, Concat(lexErrors, parseErrors, semErrors));
     }
+
+    /// <summary>
+    /// Compiles a multi-file MAIL program starting from <paramref name="entryPath"/>.
+    /// Uses <paramref name="resolver"/> to load imported files.
+    /// Single-file programs (no imports) work identically to <see cref="Compile"/>.
+    /// </summary>
+    public static (ValidatedPlan? Plan, IReadOnlyList<Diagnostic> Diagnostics) CompileFile(
+        string entryPath, ISourceResolver resolver, CompilationOptions? options = null)
+        => ModuleGraphBuilder.Build(entryPath, resolver, options);
 
     private static IReadOnlyList<Diagnostic> Concat(params IReadOnlyList<Diagnostic>[] lists)
     {

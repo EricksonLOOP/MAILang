@@ -71,7 +71,9 @@ record EventDto(
     [property: JsonPropertyName("timestamp")] string Timestamp,
     [property: JsonPropertyName("operation_id")] string? OperationId,
     [property: JsonPropertyName("call_id")] string? CallId,
-    [property: JsonPropertyName("duration_ms")] long? DurationMs);
+    [property: JsonPropertyName("duration_ms")] long? DurationMs,
+    [property: JsonPropertyName("parent_operation_id")] string? ParentOperationId = null,
+    [property: JsonPropertyName("activation_id")] string? ActivationId = null);
 
 record EventMsg(
     [property: JsonPropertyName("execution_id")] string ExecutionId,

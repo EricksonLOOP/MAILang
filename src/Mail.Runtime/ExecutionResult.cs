@@ -13,7 +13,8 @@ public sealed record ExecutionEvent(
     int     Sequence     = 0,
     string? StepId       = null,
     string? ActivationId = null,
-    string? AttemptId    = null);
+    string? AttemptId    = null,
+    string? ParentOperationId = null);
 
 public sealed record ExecutionResult(
     bool Succeeded,

@@ -32,4 +32,12 @@ public static class DiagnosticCodes
     public const string StringUnterminated = "MAIL-STRING-UNTERMINATED";
     public const string PromptDuplicate    = "MAIL-PROMPT-DUPLICATE";
     public const string PromptEmpty        = "MAIL-PROMPT-EMPTY";
+
+    public const string ImportNotFound    = "MAIL-IMPORT-NOT-FOUND";
+    public const string ImportCycle       = "MAIL-IMPORT-CYCLE";
+    public const string ImportAlias       = "MAIL-IMPORT-ALIAS";
+    public const string SymbolNotFound    = "MAIL-SYMBOL-NOT-FOUND";
+    public const string EntryWorkflow     = "MAIL-ENTRY-WORKFLOW";
+    public const string WorkflowRecursion = "MAIL-WORKFLOW-RECURSION";
+    public const string ToolNameCollision = "MAIL-TOOL-NAME-COLLISION";
 }

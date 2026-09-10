@@ -6,6 +6,7 @@ internal sealed class EventLogger(string executionId)
     private int _sequence;
 
     public IReadOnlyList<ExecutionEvent> Events => _events;
+    public string? ParentOperationId { get; set; }
 
     public void Log(
         string kind,
@@ -20,7 +21,7 @@ internal sealed class EventLogger(string executionId)
         _events.Add(new ExecutionEvent(
             kind, message, DateTimeOffset.UtcNow, executionId,
             operationId, callId, durationMs,
-            ++_sequence, stepId, activationId, attemptId));
+            ++_sequence, stepId, activationId, attemptId, ParentOperationId));
     }
 
     // Spec §11 — required event kind identifiers

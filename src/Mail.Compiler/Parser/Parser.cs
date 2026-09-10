@@ -11,6 +11,10 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
 
     public (ProgramNode? Program, IReadOnlyList<Diagnostic> Errors) Parse()
     {
+        var imports = new List<ImportDecl>();
+        while (IsKind(TokenKind.Import))
+            imports.Add(ParseImport());
+
         var decls = new List<Declaration>();
         while (!IsEof())
         {
@@ -20,7 +24,19 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         }
         return (_errors.Any(d => d.Severity == DiagnosticSeverity.Error)
             ? null
-            : new ProgramNode(decls), _errors);
+            : new ProgramNode(imports, decls), _errors);
+    }
+
+    private ImportDecl ParseImport()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Import);
+        string path = "";
+        if (IsKind(TokenKind.StringLiteral)) { path = Current().Text; Advance(); }
+        else Error("Expected string path after 'import'.", Current().Location);
+        Expect(TokenKind.As);
+        var alias = ExpectIdentifier() ?? "?";
+        return new ImportDecl(path, alias, loc);
     }
 
     // ── Declarations ─────────────────────────────────────────────────────────
@@ -252,6 +268,13 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
                 return new NullableTypeRef(inner, tok.Location);
             }
             Advance();
+            // Check for qualified name: Alias.TypeName
+            if (IsKind(TokenKind.Dot))
+            {
+                Advance(); // consume '.'
+                var memberName = ExpectIdentifier() ?? "?";
+                return new QualifiedNameTypeRef(tok.Text, memberName, tok.Location);
+            }
             return new NamedTypeRef(tok.Text, tok.Location);
         }
         Error($"Expected type, got '{tok.Text}'", tok.Location);
@@ -266,8 +289,8 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         while (!IsKind(TokenKind.RBrace) && !IsEof())
         {
             Expect(TokenKind.Allow);
-            var n = ExpectIdentifier();
-            if (n is null) continue;
+            var n = ParseDeclarationReference();
+            if (n is null) { Advance(); continue; }
             Expr? guard = null;
             if (IsKind(TokenKind.When))
             {
@@ -436,8 +459,22 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             return ParseAgentBody();
         if (IsKind(TokenKind.If))
             return ParseConditionalStepBody();
-        Error($"Expected 'call', 'agent', or 'if' in step body, got '{Current().Text}'", Current().Location);
+        if (IsKind(TokenKind.Workflow))
+            return ParseWorkflowCallBody();
+        Error($"Expected 'call', 'agent', 'workflow', or 'if' in step body, got '{Current().Text}'", Current().Location);
         return new CallBody("?", new Dictionary<string, Expr>());
+    }
+
+    private WorkflowCallBody ParseWorkflowCallBody()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Workflow);
+        var alias = ExpectIdentifier() ?? "?";
+        Expect(TokenKind.Dot);
+        var workflowName = ExpectIdentifier() ?? "?";
+        Expect(TokenKind.Input);
+        var inputExpr = ParseExpr();
+        return new WorkflowCallBody(alias, workflowName, inputExpr, loc);
     }
 
     private ConditionalStepBody ParseConditionalStepBody()
@@ -460,7 +497,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     private CallBody ParseCallBody()
     {
         Expect(TokenKind.Call);
-        var toolName = ExpectIdentifier() ?? "?";
+        var toolName = ParseDeclarationReference() ?? "?";
         Expect(TokenKind.LBrace);
         var args = ParseArgList();
         Expect(TokenKind.RBrace);
@@ -470,7 +507,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     private AgentBody ParseAgentBody()
     {
         Expect(TokenKind.Agent);
-        var agentName = ExpectIdentifier() ?? "?";
+        var agentName = ParseDeclarationReference() ?? "?";
 
         // Optional: input expr
         Expr? inputExpr = null;
@@ -681,6 +718,17 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         if (Current().Kind == kind) { Advance(); return; }
         var tok = Current();
         Error($"Expected '{KindName(kind)}', got '{tok.Text}'", tok.Location);
+    }
+
+    private string? ParseDeclarationReference()
+    {
+        var name = ExpectIdentifier();
+        if (IsKind(TokenKind.Dot))
+        {
+            Advance();
+            name += "." + (ExpectIdentifier() ?? "?");
+        }
+        return name;
     }
 
     private string? ExpectIdentifier()

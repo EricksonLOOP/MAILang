@@ -3,6 +3,7 @@ namespace Mail.Compiler.Lexer;
 public enum TokenKind
 {
     // Keywords
+    Import,
     Schema,
     Tool,
     Agent,

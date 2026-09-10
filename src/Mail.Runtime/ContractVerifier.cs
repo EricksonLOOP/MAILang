@@ -13,13 +13,14 @@ public static class ContractVerifier
     public static void Verify(ValidatedPlan plan, IToolRegistry registry)
     {
         // Collect all tool names referenced (from agent allow lists + call steps)
-        var referencedTools = new HashSet<string>(StringComparer.Ordinal);
+        var referencedTools = new HashSet<string>(plan.Tools.Keys, StringComparer.Ordinal);
 
         foreach (var agent in plan.Agents.Values)
             foreach (var entry in agent.AllowedTools)
                 referencedTools.Add(entry.ToolName);
 
-        CollectCallToolNames(plan.Workflow.Items, referencedTools);
+        foreach (var wf in plan.Workflows.Values)
+            CollectCallToolNames(wf.Items, referencedTools);
 
         foreach (var toolName in referencedTools)
         {
@@ -62,6 +63,10 @@ public static class ContractVerifier
             case ConditionalStepBody csb:
                 CollectFromStepBody(csb.Then, names);
                 CollectFromStepBody(csb.Else, names);
+                break;
+            case WorkflowCallBody:
+                // Workflow calls don't register tools directly; their tools are
+                // collected via the workflow's own items in the outer loop.
                 break;
         }
     }
@@ -117,6 +122,9 @@ public static class ContractVerifier
                 return TypeRefToKind(nr.Inner, plan); // Nullable unwraps to inner kind for comparison
             case NamedTypeRef nt:
                 return plan.Enums.ContainsKey(nt.Name) ? MailTypeKind.Enum : MailTypeKind.Schema;
+            case QualifiedNameTypeRef qr:
+                var qKey = $"{qr.Alias}.{qr.Name}";
+                return plan.Enums.ContainsKey(qKey) ? MailTypeKind.Enum : MailTypeKind.Schema;
             default:
                 throw new InvalidOperationException($"Unknown type ref {type.GetType().Name}.");
         }

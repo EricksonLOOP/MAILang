@@ -56,7 +56,9 @@ public sealed class WorkflowExecutor(
             state = await ExecuteWorkflowItemsAsync(plan.Workflow.Items, state, providerName, ctx, linkedCt);
 
             var output = state.Resolve(plan.Workflow.Finish);
-            ValidateOutput(output, plan.Workflow.OutputType);
+            // Preserve the original entry-workflow boundary for existing programs.
+            if (plan.Workflow.OutputType is NamedTypeRef && output is not MailSchema)
+                throw new InvalidOperationException("Workflow output expected a schema.");
 
             if (plan.Workflow.RequireOutput is not null)
             {
@@ -326,6 +328,9 @@ public sealed class WorkflowExecutor(
             case AgentBody ab:
                 return await ExecuteAgentStepAsync(ab, state, providerName, ctx, actId, ct);
 
+            case WorkflowCallBody wcb:
+                return await ExecuteSubworkflowAsync(wcb, state, providerName, ctx, actId, ct);
+
             case ConditionalStepBody csb:
                 var cond = ExprEvaluator.EvalBool(csb.Condition, state, "step if");
                 ctx.Logger.Log("branch.selected",
@@ -337,6 +342,58 @@ public sealed class WorkflowExecutor(
             default:
                 throw new InvalidOperationException($"Unknown step body type: {body.GetType().Name}");
         }
+    }
+
+    private async Task<MailValue> ExecuteSubworkflowAsync(
+        WorkflowCallBody wcb,
+        ExecutionState state,
+        string providerName,
+        ExecutionContext ctx,
+        ActivationId actId,
+        CancellationToken ct)
+    {
+        var key = wcb.TargetName ?? $"{wcb.Alias}.{wcb.WorkflowName}";
+        if (!plan.Workflows.TryGetValue(key, out var childWorkflow))
+            throw new InvalidOperationException($"Subworkflow '{key}' not found in plan.");
+
+        ct.ThrowIfCancellationRequested();
+        var childInput = state.Resolve(wcb.InputExpr);
+        ValidateOutput(childInput, childWorkflow.InputType);
+        var operationId = OperationId.New();
+
+        ctx.Logger.Log("subworkflow.started",
+            $"Subworkflow '{key}' started.",
+            operationId: operationId.Value, activationId: actId.Value);
+
+        var parentOperationId = ctx.Logger.ParentOperationId;
+        ctx.Logger.ParentOperationId = operationId.Value;
+        try
+        {
+
+            // Fresh state — child sees only its own input, not parent bindings.
+            var childState = new ExecutionState(childInput);
+            if (childWorkflow.RequireInput is not null && !ExprEvaluator.EvalBool(childWorkflow.RequireInput, childState, key))
+                throw new ContractViolationException(key, "Input contract (require input) was not satisfied.");
+
+            // Share parent ctx: same RunId, same deadline CancellationToken, same GlobalBudget.
+            childState = await ExecuteWorkflowItemsAsync(
+                childWorkflow.Items, childState, providerName, ctx, ct);
+
+            ct.ThrowIfCancellationRequested();
+            var output = childState.Resolve(childWorkflow.Finish);
+            ValidateOutput(output, childWorkflow.OutputType);
+            if (childWorkflow.RequireOutput is not null &&
+                !ExprEvaluator.EvalBool(childWorkflow.RequireOutput, childState.Publish("output", output), key))
+                throw new ContractViolationException(key, "Output contract (require output) was not satisfied.");
+
+            ctx.Logger.ParentOperationId = parentOperationId;
+            ctx.Logger.Log("subworkflow.completed",
+                $"Subworkflow '{key}' completed.",
+                operationId: operationId.Value, activationId: actId.Value);
+
+            return output;
+        }
+        finally { ctx.Logger.ParentOperationId = parentOperationId; }
     }
 
     private async Task<MailValue> ExecuteCallStepAsync(
@@ -465,9 +522,27 @@ public sealed class WorkflowExecutor(
 
     private void ValidateOutput(MailValue output, TypeRef expectedType)
     {
-        if (expectedType is NamedTypeRef && output is not MailSchema)
-            throw new InvalidOperationException(
-                $"Workflow output expected a schema but got {output.GetType().Name}.");
+        bool valid = expectedType switch
+        {
+            PrimitiveTypeRef p => p.Kind switch
+            {
+                PrimitiveKind.String => output is MailString,
+                PrimitiveKind.Bool => output is MailBool,
+                PrimitiveKind.Int => output is MailInt,
+                PrimitiveKind.Decimal => output is MailDecimal,
+                _ => false
+            },
+            NullableTypeRef n => output is MailNull || Valid(output, n.Inner),
+            ListTypeRef l => output is MailList list && list.Elements.All(x => Valid(x, l.ElementType)),
+            NamedTypeRef n when plan.Enums.TryGetValue(n.Name, out var e) =>
+                output is MailEnum value && e.Symbols.Contains(value.Symbol),
+            NamedTypeRef n when plan.Schemas.TryGetValue(n.Name, out var schema) =>
+                output is MailSchema value && schema.Fields.All(f => value.Fields.TryGetValue(f.Name, out var v)
+                    ? Valid(v, f.Type) : f.Optional),
+            _ => false
+        };
+        if (!valid) throw new InvalidOperationException($"Workflow value does not match declared type '{expectedType}'.");
+        bool Valid(MailValue value, TypeRef type) { ValidateOutput(value, type); return true; }
     }
 }
 

@@ -348,3 +348,29 @@ async def test_concurrent_executions():
     assert result_a["token"].startswith("alpha-"), f"Unexpected: {result_a}"
     assert result_b["token"].startswith("beta-"),  f"Unexpected: {result_b}"
     assert result_a["token"] != result_b["token"],  "Tokens must be distinct"
+
+@skip_no_exe
+async def test_composition_both_branches():
+    """A shared module is loaded once; agent and direct-call branches reach Python."""
+    calls = []
+    async with MailRuntime(_EXE) as rt:
+        async def token(args):
+            calls.append(args["prompt"])
+            return {"token": "python-" + args["prompt"]}
+        rt.register_tool("GenerateToken", token)
+        for urgent in (False, True):
+            result = await rt.run(str(_EXAMPLES / "composition" / "main.mail"),
+                                  input={"prompt": "hello", "urgent": urgent})
+            assert result == {"token": "python-hello"}
+    assert calls == ["hello", "hello"]
+
+
+@skip_no_exe
+async def test_import_collision_is_load_error(tmp_path):
+    (tmp_path / "tools.mail").write_text("tool T { input {} output {} }")
+    entry = tmp_path / "main.mail"
+    entry.write_text('import "tools.mail" as T tool T { input {} output {} } '
+                     'workflow Main { input String output String finish with input }')
+    async with MailRuntime(_EXE) as rt:
+        with pytest.raises(LoadError):
+            await rt.run(str(entry), input={})

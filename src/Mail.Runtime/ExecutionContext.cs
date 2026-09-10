@@ -36,7 +36,7 @@ internal sealed class ExecutionContext
         PlanHash = planHash;
         Status   = RunStatus.Created;
         Limits   = limits;
-        Budget   = new GlobalBudget();
+        Budget   = new GlobalBudget(limits);
         Logger   = new EventLogger(runId.Value);
     }
 
