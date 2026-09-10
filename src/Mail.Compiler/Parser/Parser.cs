@@ -34,6 +34,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             TokenKind.Tool     => ParseTool(),
             TokenKind.Agent    => ParseAgent(),
             TokenKind.Workflow => ParseWorkflow(),
+            TokenKind.Enum     => ParseEnum(),
             _ => UnexpectedDeclaration(tok),
         };
     }
@@ -48,6 +49,30 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         var fields = ParseFieldDecls();
         Expect(TokenKind.RBrace);
         return new SchemaDecl(name, fields, loc);
+    }
+
+    private EnumDecl? ParseEnum()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Enum);
+        var name = ExpectIdentifier();
+        if (name is null) return null;
+        Expect(TokenKind.LBrace);
+        var symbols = ParseSymbolList();
+        Expect(TokenKind.RBrace);
+        return new EnumDecl(name, symbols, loc);
+    }
+
+    private List<string> ParseSymbolList()
+    {
+        var symbols = new List<string>();
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            var sym = ExpectIdentifier();
+            if (sym is not null) symbols.Add(sym);
+            if (IsKind(TokenKind.Comma)) Advance();
+        }
+        return symbols;
     }
 
     private ToolDecl? ParseTool()
@@ -190,7 +215,13 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             if (fieldName is null) { SkipToNextRBrace(); break; }
             Expect(TokenKind.Colon);
             var type = ParseTypeRef();
-            fields.Add(new FieldDecl(fieldName, type));
+            var optional = false;
+            if (IsKind(TokenKind.Optional))
+            {
+                optional = true;
+                Advance();
+            }
+            fields.Add(new FieldDecl(fieldName, type, optional));
         }
         return fields;
     }
@@ -198,11 +229,28 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     private TypeRef ParseTypeRef()
     {
         var tok = Current();
-        if (tok.Kind == TokenKind.KwString) { Advance(); return new PrimitiveTypeRef(PrimitiveKind.String); }
-        if (tok.Kind == TokenKind.KwBool)   { Advance(); return new PrimitiveTypeRef(PrimitiveKind.Bool); }
-        if (tok.Kind == TokenKind.KwInt)    { Advance(); return new PrimitiveTypeRef(PrimitiveKind.Int); }
+        if (tok.Kind == TokenKind.KwString)  { Advance(); return new PrimitiveTypeRef(PrimitiveKind.String); }
+        if (tok.Kind == TokenKind.KwBool)    { Advance(); return new PrimitiveTypeRef(PrimitiveKind.Bool); }
+        if (tok.Kind == TokenKind.KwInt)     { Advance(); return new PrimitiveTypeRef(PrimitiveKind.Int); }
+        if (tok.Kind == TokenKind.KwDecimal) { Advance(); return new PrimitiveTypeRef(PrimitiveKind.Decimal); }
         if (tok.Kind == TokenKind.Identifier)
         {
+            if (tok.Text == "List")
+            {
+                Advance();
+                Expect(TokenKind.Lt);
+                var elementType = ParseTypeRef();
+                Expect(TokenKind.Gt);
+                return new ListTypeRef(elementType, tok.Location);
+            }
+            if (tok.Text == "Nullable")
+            {
+                Advance();
+                Expect(TokenKind.Lt);
+                var inner = ParseTypeRef();
+                Expect(TokenKind.Gt);
+                return new NullableTypeRef(inner, tok.Location);
+            }
             Advance();
             return new NamedTypeRef(tok.Text, tok.Location);
         }
@@ -233,7 +281,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
 
     // ── Workflow items ────────────────────────────────────────────────────────
 
-    private List<WorkflowItem> ParseWorkflowItems()
+    private List<WorkflowItem> ParseWorkflowItems(bool insideLoop = false)
     {
         var items = new List<WorkflowItem>();
         while (!IsEof())
@@ -244,7 +292,19 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             }
             else if (IsKind(TokenKind.If))
             {
-                items.Add(ParseIfItem());
+                items.Add(ParseIfItem(insideLoop));
+            }
+            else if (IsKind(TokenKind.Loop))
+            {
+                items.Add(ParseLoopItem());
+            }
+            else if (insideLoop && IsKind(TokenKind.Break))
+            {
+                items.Add(ParseBreakItem());
+            }
+            else if (insideLoop && IsKind(TokenKind.Continue))
+            {
+                items.Add(ParseContinueItem());
             }
             else
             {
@@ -254,20 +314,99 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         return items;
     }
 
-    private IfItem ParseIfItem()
+    // ── Loop items ────────────────────────────────────────────────────────────
+
+    private LoopItem ParseLoopItem()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Loop);
+        var name = ExpectIdentifier() ?? "?";
+        Expect(TokenKind.LBrace);
+
+        Expect(TokenKind.Params);
+        Expect(TokenKind.LBrace);
+        var loopParams = ParseLoopParams();
+        Expect(TokenKind.RBrace);
+
+        Expect(TokenKind.Output);
+        var outputType = ParseTypeRef();
+
+        Expect(TokenKind.Max);
+        var maxTok = Current();
+        int maxIterations = 1;
+        if (maxTok.Kind == TokenKind.IntLiteral)
+        {
+            if (int.TryParse(maxTok.Text, out var parsed) && parsed > 0)
+                maxIterations = parsed;
+            else
+                Error("'max' value must be a positive integer.", maxTok.Location);
+            Advance();
+        }
+        else
+        {
+            Error($"Expected integer after 'max', got '{maxTok.Text}'.", maxTok.Location);
+        }
+
+        var body = ParseWorkflowItems(insideLoop: true);
+
+        Expect(TokenKind.Save);
+        Expect(TokenKind.As);
+        var saveAs = ExpectIdentifier() ?? "?";
+        Expect(TokenKind.RBrace);
+
+        return new LoopItem(name, loopParams, outputType, maxIterations, body, saveAs, loc);
+    }
+
+    private List<LoopParam> ParseLoopParams()
+    {
+        var list = new List<LoopParam>();
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            var loc = Current().Location;
+            var paramName = ExpectIdentifier();
+            if (paramName is null) { SkipToNextRBrace(); break; }
+            Expect(TokenKind.Colon);
+            var paramType = ParseTypeRef();
+            Expect(TokenKind.Assign);
+            var initExpr = ParseExpr();
+            list.Add(new LoopParam(paramName, paramType, initExpr, loc));
+            if (IsKind(TokenKind.Comma)) Advance();
+        }
+        return list;
+    }
+
+    private LoopBreakItem ParseBreakItem()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Break);
+        var expr = ParseExpr();
+        return new LoopBreakItem(expr, loc);
+    }
+
+    private LoopContinueItem ParseContinueItem()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Continue);
+        Expect(TokenKind.LBrace);
+        var args = ParseArgList();
+        Expect(TokenKind.RBrace);
+        return new LoopContinueItem(args, loc);
+    }
+
+    private IfItem ParseIfItem(bool insideLoop = false)
     {
         var loc = Current().Location;
         Expect(TokenKind.If);
         var condition = ParseExpr();
         Expect(TokenKind.LBrace);
-        var thenItems = ParseWorkflowItems();
+        var thenItems = ParseWorkflowItems(insideLoop);
         Expect(TokenKind.RBrace);
         List<WorkflowItem>? elseItems = null;
         if (IsKind(TokenKind.Else))
         {
             Advance();
             Expect(TokenKind.LBrace);
-            elseItems = ParseWorkflowItems();
+            elseItems = ParseWorkflowItems(insideLoop);
             Expect(TokenKind.RBrace);
         }
         return new IfItem(condition, thenItems, elseItems, loc);
@@ -563,7 +702,9 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
              or TokenKind.Output   or TokenKind.Model     or TokenKind.Tools    or TokenKind.Allow
              or TokenKind.System   or TokenKind.If        or TokenKind.Else     or TokenKind.When
              or TokenKind.Require  or TokenKind.Then      or TokenKind.Not      or TokenKind.And
-             or TokenKind.Or       or TokenKind.True      or TokenKind.False;
+             or TokenKind.Or       or TokenKind.True      or TokenKind.False    or TokenKind.Enum
+             or TokenKind.Optional or TokenKind.Loop      or TokenKind.Break    or TokenKind.Continue
+             or TokenKind.Max      or TokenKind.Params;
 
     private void SkipToNextRBrace()
     {
@@ -573,7 +714,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
 
     private Declaration? UnexpectedDeclaration(Token tok)
     {
-        Error($"Expected 'schema', 'tool', 'agent', or 'workflow', got '{tok.Text}'", tok.Location);
+        Error($"Expected 'schema', 'tool', 'agent', 'workflow', or 'enum', got '{tok.Text}'", tok.Location);
         SkipToNextRBrace();
         if (IsKind(TokenKind.RBrace)) Advance();
         return null;
@@ -628,6 +769,15 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         TokenKind.Gt        => ">",
         TokenKind.GtEq      => ">=",
         TokenKind.Identifier => "<identifier>",
+        TokenKind.Enum       => "enum",
+        TokenKind.Optional   => "optional",
+        TokenKind.KwDecimal  => "Decimal",
+        TokenKind.Loop       => "loop",
+        TokenKind.Break      => "break",
+        TokenKind.Continue   => "continue",
+        TokenKind.Max        => "max",
+        TokenKind.Params     => "params",
+        TokenKind.Assign     => "=",
         _ => kind.ToString(),
     };
 }
