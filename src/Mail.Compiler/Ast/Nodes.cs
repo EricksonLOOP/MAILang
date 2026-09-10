@@ -4,11 +4,13 @@ namespace Mail.Compiler.Ast;
 
 // ── Type references ────────────────────────────────────────────────────────────
 
-public enum PrimitiveKind { String, Bool, Int }
+public enum PrimitiveKind { String, Bool, Int, Decimal }
 
 public abstract record TypeRef;
 public sealed record PrimitiveTypeRef(PrimitiveKind Kind) : TypeRef;
 public sealed record NamedTypeRef(string Name, SourceLocation Location) : TypeRef;
+public sealed record ListTypeRef(TypeRef ElementType, SourceLocation Location) : TypeRef;
+public sealed record NullableTypeRef(TypeRef Inner, SourceLocation Location) : TypeRef;
 
 // ── Expressions ───────────────────────────────────────────────────────────────
 
@@ -28,9 +30,14 @@ public sealed record ConditionalExpr(Expr Condition, Expr Then, Expr Else, Sourc
 
 // ── Declarations ──────────────────────────────────────────────────────────────
 
-public sealed record FieldDecl(string Name, TypeRef Type);
+public sealed record FieldDecl(string Name, TypeRef Type, bool Optional = false);
 
 public abstract record Declaration(string Name, SourceLocation Location);
+
+public sealed record EnumDecl(
+    string Name,
+    IReadOnlyList<string> Symbols,
+    SourceLocation Location) : Declaration(Name, Location);
 
 public sealed record SchemaDecl(
     string Name,
@@ -97,6 +104,29 @@ public sealed record IfItem(
     Expr Condition,
     IReadOnlyList<WorkflowItem> Then,
     IReadOnlyList<WorkflowItem>? Else,
+    SourceLocation Location) : WorkflowItem(Location);
+
+// ── Loop construct ────────────────────────────────────────────────────────────
+
+// One typed parameter with its initial-value expression
+public sealed record LoopParam(string Name, TypeRef Type, Expr InitExpr, SourceLocation Location);
+
+// continue { name: expr, ... } — advances to the next iteration
+public sealed record LoopContinueItem(
+    IReadOnlyDictionary<string, Expr> Args,
+    SourceLocation Location) : WorkflowItem(Location);
+
+// break expr — exits the loop and produces its output value
+public sealed record LoopBreakItem(Expr OutputExpr, SourceLocation Location) : WorkflowItem(Location);
+
+// The loop construct itself; SaveAs binds the break output in the outer scope
+public sealed record LoopItem(
+    string Name,
+    IReadOnlyList<LoopParam> Params,
+    TypeRef OutputType,
+    int MaxIterations,
+    IReadOnlyList<WorkflowItem> Body,
+    string SaveAs,
     SourceLocation Location) : WorkflowItem(Location);
 
 // ── Workflow ──────────────────────────────────────────────────────────────────
