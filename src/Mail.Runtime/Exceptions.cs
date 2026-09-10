@@ -57,3 +57,28 @@ public sealed class ContractViolationException(string context, string detail)
     public string Context { get; } = context;
     public string Detail  { get; } = detail;
 }
+
+public sealed class InvalidStatusTransitionException(RunStatus from, RunStatus to)
+    : Exception($"Invalid execution status transition: {from} → {to}.")
+{
+    public RunStatus From { get; } = from;
+    public RunStatus To   { get; } = to;
+}
+
+public sealed class ExecutionAlreadyTerminatedException(string runId)
+    : Exception($"Execution '{runId}' is in a terminal state and cannot be resumed.")
+{
+    public string RunId { get; } = runId;
+}
+
+public sealed class ApprovalDeniedException(string operationId)
+    : Exception($"Approval was denied for operation '{operationId}'.")
+{
+    public string OperationId { get; } = operationId;
+}
+
+public sealed class ApprovalExpiredException(string operationId)
+    : Exception($"Approval expired for operation '{operationId}'.")
+{
+    public string OperationId { get; } = operationId;
+}
