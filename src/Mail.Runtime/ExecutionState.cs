@@ -24,23 +24,34 @@ public sealed class ExecutionState
     public ExecutionState Publish(string name, MailValue value) =>
         new(Input, Bindings.SetItem(name, value));
 
-    public MailValue Resolve(Expr expr) => expr switch
+    // Merge bindings from a child scope (branch result) into this state
+    public ExecutionState MergeFrom(ExecutionState child)
     {
-        NameExpr ne => ResolveBinding(ne.Name),
-        FieldAccessExpr fa => ResolveField(fa),
-        _ => throw new InvalidOperationException($"Unknown expression type: {expr.GetType().Name}"),
-    };
+        var builder = Bindings.ToBuilder();
+        foreach (var (k, v) in child.Bindings)
+            if (!Bindings.ContainsKey(k))
+                builder[k] = v;
+        return new(Input, builder.ToImmutable());
+    }
 
-    private MailValue ResolveBinding(string name)
+    public MailValue Resolve(Expr expr) => ExprEvaluator.Eval(expr, this);
+
+    // Creates a minimal state used for evaluating guard expressions with only "input" bound
+    public static ExecutionState WithInput(MailValue inputValue) =>
+        new(inputValue);
+
+    // Used by ExprEvaluator
+    internal MailValue ResolveBinding(string name)
     {
         if (name == "input") return Input;
         if (Bindings.TryGetValue(name, out var value)) return value;
         throw new BindingNotFoundException(name);
     }
 
-    private MailValue ResolveField(FieldAccessExpr fa)
+    // Used by ExprEvaluator
+    internal MailValue ResolveField(FieldAccessExpr fa)
     {
-        var target = Resolve(fa.Target);
+        var target = ExprEvaluator.Eval(fa.Target, this);
         if (target is not MailSchema schema)
             throw new InvalidOperationException(
                 $"Cannot access field '{fa.Field}' on a non-schema value of type {target.GetType().Name}.");

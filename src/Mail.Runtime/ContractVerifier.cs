@@ -16,12 +16,10 @@ public static class ContractVerifier
         var referencedTools = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var agent in plan.Agents.Values)
-            foreach (var toolName in agent.AllowedTools)
-                referencedTools.Add(toolName);
+            foreach (var entry in agent.AllowedTools)
+                referencedTools.Add(entry.ToolName);
 
-        foreach (var step in plan.Workflow.Steps)
-            if (step.Body is CallBody cb)
-                referencedTools.Add(cb.ToolName);
+        CollectCallToolNames(plan.Workflow.Items, referencedTools);
 
         foreach (var toolName in referencedTools)
         {
@@ -34,6 +32,37 @@ public static class ContractVerifier
 
             VerifyFields(toolName, "input",  decl.Input,  registry.InputContract(toolName));
             VerifyFields(toolName, "output", decl.Output, registry.OutputContract(toolName));
+        }
+    }
+
+    private static void CollectCallToolNames(IReadOnlyList<WorkflowItem> items, HashSet<string> names)
+    {
+        foreach (var item in items)
+        {
+            switch (item)
+            {
+                case StepItem si:
+                    CollectFromStepBody(si.Step.Body, names);
+                    break;
+                case IfItem ii:
+                    CollectCallToolNames(ii.Then, names);
+                    if (ii.Else is not null) CollectCallToolNames(ii.Else, names);
+                    break;
+            }
+        }
+    }
+
+    private static void CollectFromStepBody(StepBody body, HashSet<string> names)
+    {
+        switch (body)
+        {
+            case CallBody cb:
+                names.Add(cb.ToolName);
+                break;
+            case ConditionalStepBody csb:
+                CollectFromStepBody(csb.Then, names);
+                CollectFromStepBody(csb.Else, names);
+                break;
         }
     }
 

@@ -50,3 +50,10 @@ public sealed class ModelBindingNotFoundException(string logicalName, string pro
 
 public sealed class DuplicateCallIdException(string callId)
     : Exception($"Provider returned duplicate call ID '{callId}'.");
+
+public sealed class ContractViolationException(string context, string detail)
+    : Exception($"Contract violation in '{context}': {detail}.")
+{
+    public string Context { get; } = context;
+    public string Detail  { get; } = detail;
+}

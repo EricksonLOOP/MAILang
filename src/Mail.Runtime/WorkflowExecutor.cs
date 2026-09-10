@@ -33,23 +33,31 @@ public sealed class WorkflowExecutor(
 
         try
         {
-            foreach (var step in plan.Workflow.Steps)
+            // Validate workflow input contract
+            if (plan.Workflow.RequireInput is not null)
             {
-                logger.Log("step.started", $"Step '{step.Name}' started.");
-
-                MailValue result = step.Body switch
+                if (!ExprEvaluator.EvalBool(plan.Workflow.RequireInput, state, plan.Workflow.Name))
                 {
-                    CallBody cb   => await ExecuteCallStep(cb, state, linkedCt),
-                    AgentBody ab  => await ExecuteAgentStep(ab, state, providerName, logger, linkedCt),
-                    _             => throw new InvalidOperationException($"Unknown step body type."),
-                };
-
-                state = state.Publish(step.SaveAs, result);
-                logger.Log("step.completed", $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.");
+                    logger.Log("contract.rejected", $"Workflow '{plan.Workflow.Name}' input contract rejected.");
+                    throw new ContractViolationException(plan.Workflow.Name, "Input contract (require input) was not satisfied.");
+                }
             }
+
+            state = await ExecuteWorkflowItemsAsync(plan.Workflow.Items, state, providerName, logger, linkedCt);
 
             var output = state.Resolve(plan.Workflow.Finish);
             ValidateOutput(output, plan.Workflow.OutputType);
+
+            // Validate workflow output contract
+            if (plan.Workflow.RequireOutput is not null)
+            {
+                var outputState = state.Publish("output", output);
+                if (!ExprEvaluator.EvalBool(plan.Workflow.RequireOutput, outputState, plan.Workflow.Name))
+                {
+                    logger.Log("contract.rejected", $"Workflow '{plan.Workflow.Name}' output contract rejected.");
+                    throw new ContractViolationException(plan.Workflow.Name, "Output contract (require output) was not satisfied.");
+                }
+            }
 
             logger.Log("execution.succeeded", "Workflow completed successfully.");
             return new ExecutionResult(true, output, logger.Events, null);
@@ -66,24 +74,109 @@ public sealed class WorkflowExecutor(
         }
     }
 
-    private async Task<MailValue> ExecuteCallStep(CallBody cb, ExecutionState state, CancellationToken ct)
+    private async Task<ExecutionState> ExecuteWorkflowItemsAsync(
+        IReadOnlyList<WorkflowItem> items,
+        ExecutionState state,
+        string providerName,
+        EventLogger logger,
+        CancellationToken ct)
     {
-        // Resolve args from current state
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            switch (item)
+            {
+                case StepItem si:
+                    var step = si.Step;
+                    logger.Log("step.started", $"Step '{step.Name}' started.");
+                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, logger, ct);
+                    state = state.Publish(step.SaveAs, result);
+                    logger.Log("step.completed", $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.");
+                    break;
+
+                case IfItem ifItem:
+                    ct.ThrowIfCancellationRequested();
+                    var condValue = ExprEvaluator.EvalBool(ifItem.Condition, state, "if");
+                    logger.Log("branch.selected", $"Branch condition evaluated to {condValue}.");
+
+                    if (condValue)
+                    {
+                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Then, state, providerName, logger, ct);
+                        state = state.MergeFrom(branchState);
+                    }
+                    else if (ifItem.Else is not null)
+                    {
+                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Else, state, providerName, logger, ct);
+                        state = state.MergeFrom(branchState);
+                    }
+                    // No else and condition false: no state change
+                    break;
+            }
+        }
+        return state;
+    }
+
+    private async Task<MailValue> ExecuteStepBodyAsync(
+        StepBody body,
+        ExecutionState state,
+        string providerName,
+        EventLogger logger,
+        CancellationToken ct)
+    {
+        switch (body)
+        {
+            case CallBody cb:
+                return await ExecuteCallStepAsync(cb, state, ct);
+
+            case AgentBody ab:
+                return await ExecuteAgentStepAsync(ab, state, providerName, logger, ct);
+
+            case ConditionalStepBody csb:
+                var cond = ExprEvaluator.EvalBool(csb.Condition, state, "step if");
+                logger.Log("branch.selected", $"Step branch condition evaluated to {cond}.");
+                return await ExecuteStepBodyAsync(cond ? csb.Then : csb.Else, state, providerName, logger, ct);
+
+            default:
+                throw new InvalidOperationException($"Unknown step body type: {body.GetType().Name}");
+        }
+    }
+
+    private async Task<MailValue> ExecuteCallStepAsync(CallBody cb, ExecutionState state, CancellationToken ct)
+    {
+        var tool = plan.Tools[cb.ToolName];
+
+        // Resolve args
         var resolvedArgs = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
         foreach (var (key, expr) in cb.Args)
             resolvedArgs[key] = state.Resolve(expr);
-
-        // Validate args against tool input contract and convert to MailSchema
         var inputSchema = BuildSchemaFromValues(resolvedArgs.ToImmutable(), tools.InputContract(cb.ToolName), cb.ToolName);
 
-        // Consume budget and dispatch
+        // Validate tool input contract
+        if (tool.RequireInput is not null)
+        {
+            var inputState = ExecutionState.WithInput(inputSchema);
+            if (!ExprEvaluator.EvalBool(tool.RequireInput, inputState, cb.ToolName))
+                throw new ContractViolationException(cb.ToolName, "Input contract (require input) was not satisfied.");
+        }
+
         var tracker = new BudgetTracker(limits);
         tracker.ConsumeToolCall();
 
-        return await tools.Resolve(cb.ToolName).ExecuteAsync(inputSchema, ct);
+        var output = await tools.Resolve(cb.ToolName).ExecuteAsync(inputSchema, ct);
+
+        // Validate tool output contract
+        if (tool.RequireOutput is not null)
+        {
+            var outputState = ExecutionState.WithInput(inputSchema).Publish("output", output);
+            if (!ExprEvaluator.EvalBool(tool.RequireOutput, outputState, cb.ToolName))
+                throw new ContractViolationException(cb.ToolName, "Output contract (require output) was not satisfied.");
+        }
+
+        return output;
     }
 
-    private async Task<MailValue> ExecuteAgentStep(AgentBody ab, ExecutionState state, string providerName, EventLogger logger, CancellationToken ct)
+    private async Task<MailValue> ExecuteAgentStepAsync(AgentBody ab, ExecutionState state, string providerName, EventLogger logger, CancellationToken ct)
     {
         if (!plan.Agents.TryGetValue(ab.AgentName, out var agentDecl))
             throw new InvalidOperationException($"Agent '{ab.AgentName}' not found in plan.");
@@ -91,13 +184,38 @@ public sealed class WorkflowExecutor(
         var binding = modelBindings.Resolve(agentDecl.LogicalModelName, providerName);
         var provider = providers.Resolve(binding.ProviderName);
 
+        // Resolve explicit input expression if provided
+        MailValue? agentInput = null;
+        if (ab.InputExpr is not null)
+            agentInput = state.Resolve(ab.InputExpr);
+
+        // Validate agent input contract
+        if (agentDecl.RequireInput is not null && agentInput is not null)
+        {
+            var inputState = ExecutionState.WithInput(agentInput);
+            if (!ExprEvaluator.EvalBool(agentDecl.RequireInput, inputState, ab.AgentName))
+                throw new ContractViolationException(ab.AgentName, "Input contract (require input) was not satisfied.");
+        }
+
         var context = ab.ContextNames
             .Select(name => (name, state.ResolveBinding(name)))
             .ToList();
 
         var budget = new BudgetTracker(limits);
-        var runner = new AgentRunner(agentDecl, provider, binding.ModelId, _auth, tools, budget, logger, plan.Schemas);
-        return await runner.RunAsync(context, ct);
+        var runner = new AgentRunner(agentDecl, provider, binding.ModelId, _auth, tools, budget, logger, plan.Schemas, agentInput);
+        var result = await runner.RunAsync(context, ct);
+
+        // Validate agent output contract
+        if (agentDecl.RequireOutput is not null)
+        {
+            var outputState = agentInput is not null
+                ? ExecutionState.WithInput(agentInput).Publish("output", result)
+                : new ExecutionState(result);
+            if (!ExprEvaluator.EvalBool(agentDecl.RequireOutput, outputState, ab.AgentName))
+                throw new ContractViolationException(ab.AgentName, "Output contract (require output) was not satisfied.");
+        }
+
+        return result;
     }
 
     private static MailSchema BuildSchemaFromValues(
@@ -114,12 +232,10 @@ public sealed class WorkflowExecutor(
 
     private void ValidateOutput(MailValue output, TypeRef expectedType)
     {
-        // For the prototype: check that named type output is a MailSchema
         if (expectedType is NamedTypeRef && output is not MailSchema)
             throw new InvalidOperationException(
                 $"Workflow output expected a schema but got {output.GetType().Name}.");
     }
-
 }
 
 // Extension helper used in agent step
@@ -130,4 +246,3 @@ file static class ExecutionStateExtensions
         : state.Bindings.TryGetValue(name, out var v) ? v
         : throw new BindingNotFoundException(name);
 }
-

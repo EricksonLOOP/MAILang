@@ -14,7 +14,8 @@ internal sealed class AgentRunner(
     IToolRegistry tools,
     BudgetTracker budget,
     EventLogger logger,
-    IReadOnlyDictionary<string, SchemaDecl>? schemas = null)
+    IReadOnlyDictionary<string, SchemaDecl>? schemas = null,
+    MailValue? agentInput = null)
 {
     private readonly ArgumentValidator _argValidator = new();
 
@@ -54,7 +55,7 @@ internal sealed class AgentRunner(
                 {
                     try
                     {
-                        auth.CheckAllowed(agent, toolCall.ToolName);
+                        auth.CheckAllowed(agent, toolCall.ToolName, agentInput);
                     }
                     catch (ToolNotAuthorizedException)
                     {
@@ -178,11 +179,26 @@ internal sealed class AgentRunner(
     private List<ToolDefinition> BuildToolDefinitions()
     {
         var defs = new List<ToolDefinition>();
-        foreach (var toolName in agent.AllowedTools)
+        foreach (var entry in agent.AllowedTools)
         {
-            var inputSchema  = FieldContractsToJsonSchema(tools.InputContract(toolName));
-            var outputSchema = FieldContractsToJsonSchema(tools.OutputContract(toolName));
-            defs.Add(new ToolDefinition(toolName, inputSchema, outputSchema));
+            // Skip tools whose when guard is currently false
+            if (entry.WhenGuard is not null && agentInput is not null)
+            {
+                try
+                {
+                    var guardState = ExecutionState.WithInput(agentInput);
+                    var guardResult = ExprEvaluator.Eval(entry.WhenGuard, guardState);
+                    if (guardResult is MailBool { Value: false }) continue;
+                }
+                catch
+                {
+                    continue; // guard evaluation failure → exclude tool
+                }
+            }
+
+            var inputSchema  = FieldContractsToJsonSchema(tools.InputContract(entry.ToolName));
+            var outputSchema = FieldContractsToJsonSchema(tools.OutputContract(entry.ToolName));
+            defs.Add(new ToolDefinition(entry.ToolName, inputSchema, outputSchema));
         }
         return defs;
     }
