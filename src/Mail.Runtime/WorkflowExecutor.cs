@@ -112,6 +112,130 @@ public sealed class WorkflowExecutor(
                     }
                     // No else and condition false: no state change
                     break;
+
+                case LoopItem loopItem:
+                    logger.Log("loop.started", $"Loop '{loopItem.Name}' started (max {loopItem.MaxIterations} iterations).");
+                    var loopResult = await ExecuteLoopAsync(loopItem, state, providerName, logger, ct);
+                    state = state.Publish(loopItem.SaveAs, loopResult);
+                    logger.Log("loop.completed", $"Loop '{loopItem.Name}' completed, saved as '{loopItem.SaveAs}'.");
+                    break;
+            }
+        }
+        return state;
+    }
+
+    private async Task<MailValue> ExecuteLoopAsync(
+        LoopItem loop,
+        ExecutionState outerState,
+        string providerName,
+        EventLogger logger,
+        CancellationToken ct)
+    {
+        // Build initial loop-param bindings from init expressions evaluated against outer state
+        var paramBindings = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
+        foreach (var param in loop.Params)
+            paramBindings[param.Name] = outerState.Resolve(param.InitExpr);
+
+        for (int iteration = 1; iteration <= loop.MaxIterations; iteration++)
+        {
+            ct.ThrowIfCancellationRequested();
+            logger.Log("loop.iteration", $"Loop '{loop.Name}' iteration {iteration}/{loop.MaxIterations}.");
+
+            // Build iteration state: outer bindings + current param values
+            var iterState = outerState;
+            foreach (var (name, value) in paramBindings)
+                iterState = iterState.Publish(name, value);
+
+            try
+            {
+                await ExecuteLoopBodyAsync(loop.Body, iterState, providerName, logger, ct);
+                throw new InvalidOperationException(
+                    $"Loop '{loop.Name}' body completed iteration {iteration} without 'break' or 'continue'.");
+            }
+            catch (LoopBreakSignal brk)
+            {
+                logger.Log("loop.break", $"Loop '{loop.Name}' exited via 'break' on iteration {iteration}.");
+                return brk.Output;
+            }
+            catch (LoopContinueSignal cont)
+            {
+                if (iteration == loop.MaxIterations)
+                    throw new InvalidOperationException(
+                        $"Loop '{loop.Name}' reached maximum of {loop.MaxIterations} iterations without breaking.");
+
+                // Update param bindings for the next iteration
+                paramBindings.Clear();
+                foreach (var param in loop.Params)
+                {
+                    if (cont.Args.TryGetValue(param.Name, out var nextValue))
+                        paramBindings[param.Name] = nextValue;
+                    else
+                        throw new InvalidOperationException(
+                            $"Loop '{loop.Name}' 'continue' did not provide a value for parameter '{param.Name}'.");
+                }
+            }
+        }
+
+        // Should be unreachable: the catch(LoopContinueSignal) above throws when iteration == MaxIterations
+        throw new InvalidOperationException($"Loop '{loop.Name}' exited unexpectedly.");
+    }
+
+    // Returns the updated ExecutionState after the items complete normally.
+    // Throws LoopBreakSignal or LoopContinueSignal when those statements are reached.
+    private async Task<ExecutionState> ExecuteLoopBodyAsync(
+        IReadOnlyList<WorkflowItem> items,
+        ExecutionState state,
+        string providerName,
+        EventLogger logger,
+        CancellationToken ct)
+    {
+        foreach (var item in items)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            switch (item)
+            {
+                case StepItem si:
+                    var step = si.Step;
+                    logger.Log("step.started", $"Step '{step.Name}' started.");
+                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, logger, ct);
+                    state = state.Publish(step.SaveAs, result);
+                    logger.Log("step.completed", $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.");
+                    break;
+
+                case IfItem ifItem:
+                    ct.ThrowIfCancellationRequested();
+                    var condValue = ExprEvaluator.EvalBool(ifItem.Condition, state, "if");
+                    logger.Log("branch.selected", $"Branch condition evaluated to {condValue}.");
+
+                    if (condValue)
+                    {
+                        // Signals from within the branch bubble up naturally
+                        var branchState = await ExecuteLoopBodyAsync(ifItem.Then, state, providerName, logger, ct);
+                        state = state.MergeFrom(branchState);
+                    }
+                    else if (ifItem.Else is not null)
+                    {
+                        var branchState = await ExecuteLoopBodyAsync(ifItem.Else, state, providerName, logger, ct);
+                        state = state.MergeFrom(branchState);
+                    }
+                    break;
+
+                case LoopItem nestedLoop:
+                    logger.Log("loop.started", $"Loop '{nestedLoop.Name}' started (max {nestedLoop.MaxIterations} iterations).");
+                    var loopResult = await ExecuteLoopAsync(nestedLoop, state, providerName, logger, ct);
+                    state = state.Publish(nestedLoop.SaveAs, loopResult);
+                    logger.Log("loop.completed", $"Loop '{nestedLoop.Name}' completed, saved as '{nestedLoop.SaveAs}'.");
+                    break;
+
+                case LoopBreakItem brk:
+                    throw new LoopBreakSignal(state.Resolve(brk.OutputExpr));
+
+                case LoopContinueItem cont:
+                    var args = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
+                    foreach (var (key, expr) in cont.Args)
+                        args[key] = state.Resolve(expr);
+                    throw new LoopContinueSignal(args.ToImmutable());
             }
         }
         return state;
@@ -245,4 +369,15 @@ file static class ExecutionStateExtensions
         name == "input" ? state.Input
         : state.Bindings.TryGetValue(name, out var v) ? v
         : throw new BindingNotFoundException(name);
+}
+
+// Internal control-flow signals for loop break/continue — never cross public API boundaries
+file sealed class LoopBreakSignal(MailValue output) : Exception
+{
+    public MailValue Output { get; } = output;
+}
+
+file sealed class LoopContinueSignal(System.Collections.Immutable.ImmutableDictionary<string, MailValue> args) : Exception
+{
+    public System.Collections.Immutable.ImmutableDictionary<string, MailValue> Args { get; } = args;
 }
