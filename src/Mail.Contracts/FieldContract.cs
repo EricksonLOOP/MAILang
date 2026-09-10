@@ -1,9 +1,16 @@
+using System.Collections.Immutable;
+
 namespace Mail.Contracts;
 
-public enum MailTypeKind { String, Bool, Int, Schema }
+public enum MailTypeKind { String, Bool, Int, Decimal, List, Schema, Enum }
 
 public sealed record FieldContract(
     string Name,
     MailTypeKind Kind,
     bool Required,
-    string? SchemaTypeName = null);
+    bool Nullable = false,
+    string? SchemaTypeName = null,
+    string? EnumTypeName = null,
+    ImmutableArray<string>? EnumSymbols = null,
+    MailTypeKind? ElementKind = null,
+    string? ElementTypeName = null);

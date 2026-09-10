@@ -1,5 +1,6 @@
 using Mail.Contracts;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -12,6 +13,7 @@ public static class SchemaConverter
 {
     public static string ToJson(MailValue value)
     {
+        if (value is MailNull) return "null";
         var node = ToJsonNode(value);
         return node.ToJsonString();
     }
@@ -30,26 +32,32 @@ public static class SchemaConverter
             if (!seen.Add(prop.Name))
                 throw new InvalidProviderResponseException($"Duplicate property '{prop.Name}' in response JSON.");
 
-        var fields = ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
-        var validator = new ArgumentValidator();
-
         var rawArgs = ImmutableDictionary.CreateBuilder<string, JsonElement>(StringComparer.Ordinal);
         foreach (var prop in root.EnumerateObject())
             rawArgs[prop.Name] = prop.Value.Clone(); // Clone to survive document disposal
 
         // Reuse ArgumentValidator logic
+        var validator = new ArgumentValidator();
         var validated = validator.Validate(rawArgs.ToImmutable(), contract, typeName);
         return new MailSchema(typeName, validated.Fields);
     }
 
-    private static JsonNode ToJsonNode(MailValue value) => value switch
+    internal static JsonNode ToJsonNode(MailValue value) => value switch
     {
         MailString s  => JsonValue.Create(s.Value)!,
         MailBool b    => JsonValue.Create(b.Value)!,
         MailInt i     => JsonValue.Create(i.Value)!,
+        MailDecimal d => JsonValue.Create(FormatDecimal(d.Value))!,
+        MailList l    => new JsonArray(l.Elements.Select(e => ToJsonNode(e)).ToArray()),
+        MailEnum e    => JsonValue.Create(e.Symbol)!,
         MailSchema sc => SchemaToObject(sc),
         _ => throw new InvalidOperationException($"Cannot convert {value.GetType().Name} to JSON."),
     };
+
+    // Fixed-point notation, no exponent. ToString(InvariantCulture) preserves the decimal's internal scale
+    // (e.g. 125.50m → "125.50", not "125.5"), which is required for round-trip fidelity.
+    private static string FormatDecimal(decimal value) =>
+        value.ToString(CultureInfo.InvariantCulture);
 
     private static JsonObject SchemaToObject(MailSchema schema)
     {

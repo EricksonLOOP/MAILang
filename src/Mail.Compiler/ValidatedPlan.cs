@@ -6,6 +6,7 @@ namespace Mail.Compiler;
 public sealed record ValidatedPlan(
     ProgramNode Ast,
     ImmutableDictionary<string, SchemaDecl> Schemas,
+    ImmutableDictionary<string, EnumDecl> Enums,
     ImmutableDictionary<string, ToolDecl> Tools,
     ImmutableDictionary<string, AgentDecl> Agents,
     WorkflowDecl Workflow,

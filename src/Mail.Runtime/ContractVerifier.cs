@@ -30,8 +30,8 @@ public static class ContractVerifier
             if (!plan.Tools.TryGetValue(toolName, out var decl))
                 continue; // Validated by compiler; won't happen for valid plans
 
-            VerifyFields(toolName, "input",  decl.Input,  registry.InputContract(toolName));
-            VerifyFields(toolName, "output", decl.Output, registry.OutputContract(toolName));
+            VerifyFields(toolName, "input",  decl.Input,  registry.InputContract(toolName),  plan);
+            VerifyFields(toolName, "output", decl.Output, registry.OutputContract(toolName), plan);
         }
     }
 
@@ -70,7 +70,8 @@ public static class ContractVerifier
         string toolName,
         string direction,
         IReadOnlyList<FieldDecl> declared,
-        FieldContract[] registered)
+        FieldContract[] registered,
+        ValidatedPlan plan)
     {
         foreach (var fd in declared)
         {
@@ -79,23 +80,45 @@ public static class ContractVerifier
                 throw new ToolContractMismatchException(toolName,
                     $"{direction} field '{fd.Name}' declared in .mail but absent from registered contract.");
 
-            var expectedKind = TypeRefToKind(fd.Type);
+            var expectedKind = TypeRefToKind(fd.Type, plan);
             if (expectedKind != reg.Kind)
                 throw new ToolContractMismatchException(toolName,
                     $"{direction} field '{fd.Name}' declared as {expectedKind} but registered as {reg.Kind}.");
+
+            // Check Nullable consistency
+            var declaredNullable = fd.Type is NullableTypeRef;
+            if (declaredNullable != reg.Nullable)
+                throw new ToolContractMismatchException(toolName,
+                    $"{direction} field '{fd.Name}': MAIL declares Nullable={declaredNullable} but registered contract has Nullable={reg.Nullable}.");
+
+            // Check Optional consistency
+            if (fd.Optional != !reg.Required)
+                throw new ToolContractMismatchException(toolName,
+                    $"{direction} field '{fd.Name}': MAIL declares Optional={fd.Optional} but registered contract has Required={reg.Required}.");
         }
     }
 
-    private static MailTypeKind TypeRefToKind(TypeRef type) => type switch
+    private static MailTypeKind TypeRefToKind(TypeRef type, ValidatedPlan plan)
     {
-        PrimitiveTypeRef pt => pt.Kind switch
+        switch (type)
         {
-            PrimitiveKind.String => MailTypeKind.String,
-            PrimitiveKind.Bool   => MailTypeKind.Bool,
-            PrimitiveKind.Int    => MailTypeKind.Int,
-            _ => throw new InvalidOperationException($"Unknown primitive kind {pt.Kind}."),
-        },
-        NamedTypeRef => MailTypeKind.Schema,
-        _ => throw new InvalidOperationException($"Unknown type ref {type.GetType().Name}."),
-    };
+            case PrimitiveTypeRef pt:
+                return pt.Kind switch
+                {
+                    PrimitiveKind.String  => MailTypeKind.String,
+                    PrimitiveKind.Bool    => MailTypeKind.Bool,
+                    PrimitiveKind.Int     => MailTypeKind.Int,
+                    PrimitiveKind.Decimal => MailTypeKind.Decimal,
+                    _ => throw new InvalidOperationException($"Unknown primitive kind {pt.Kind}."),
+                };
+            case ListTypeRef:
+                return MailTypeKind.List;
+            case NullableTypeRef nr:
+                return TypeRefToKind(nr.Inner, plan); // Nullable unwraps to inner kind for comparison
+            case NamedTypeRef nt:
+                return plan.Enums.ContainsKey(nt.Name) ? MailTypeKind.Enum : MailTypeKind.Schema;
+            default:
+                throw new InvalidOperationException($"Unknown type ref {type.GetType().Name}.");
+        }
+    }
 }
