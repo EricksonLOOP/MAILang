@@ -1,0 +1,31 @@
+schema EchoRequest {
+  prompt: String
+}
+
+schema EchoResponse {
+  token: String
+}
+
+tool GenerateToken {
+  input  { prompt: String }
+  output { token: String }
+}
+
+agent EchoAgent {
+  model GPT
+  output EchoResponse
+  tools { allow GenerateToken }
+}
+
+workflow TokenEchoFlow {
+  input EchoRequest
+  output EchoResponse
+
+  step echo {
+    agent EchoAgent
+    context { input }
+    save as result
+  }
+
+  finish with result
+}

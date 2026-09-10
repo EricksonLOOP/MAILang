@@ -1,0 +1,30 @@
+{
+  "name": "mail-language",
+  "displayName": "MAIL Language",
+  "description": "Syntax highlighting for the MAIL agent orchestration DSL",
+  "version": "0.0.1",
+  "publisher": "mail-project",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mail",
+        "aliases": ["MAIL", "mail"],
+        "extensions": [".mail"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mail",
+        "scopeName": "source.mail",
+        "path": "./syntaxes/mail.tmLanguage.json"
+      }
+    ]
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "MAIL",
+  "scopeName": "source.mail",
+  "fileTypes": ["mail"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings-triple" },
+    { "include": "#strings-single" },
+    { "include": "#member-access" },
+    { "include": "#keywords-declaration" },
+    { "include": "#keywords-control" },
+    { "include": "#keywords-other" },
+    { "include": "#types-primitive" },
+    { "include": "#type-names" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.double-slash.mail",
+      "match": "//.*$"
+    },
+    "strings-triple": {
+      "name": "string.quoted.triple.mail",
+      "begin": "\"\"\"",
+      "end": "\"\"\"",
+      "patterns": [
+        { "name": "constant.character.escape.mail", "match": "\\\\[\"\\\\]" }
+      ]
+    },
+    "strings-single": {
+      "name": "string.quoted.double.mail",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.mail", "match": "\\\\([\"\\\\\/bfnrt]|u[0-9A-Fa-f]{4})" }
+      ]
+    },
+    "member-access": {
+      "comment": "Dotted expressions like input.order_id or result.status — must come before keyword rules so 'input.x' is consumed whole",
+      "name": "variable.other.readwrite.mail",
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)+"
+    },
+    "keywords-declaration": {
+      "name": "keyword.declaration.mail",
+      "match": "\\b(schema|tool|agent|workflow)\\b"
+    },
+    "keywords-control": {
+      "name": "keyword.control.mail",
+      "match": "\\b(step|call|finish|with)\\b"
+    },
+    "keywords-other": {
+      "name": "keyword.other.mail",
+      "match": "\\b(input|output|save|as|context|tools|allow|model|system)\\b"
+    },
+    "types-primitive": {
+      "name": "support.type.primitive.mail",
+      "match": "\\b(String|Bool|Int)\\b"
+    },
+    "type-names": {
+      "comment": "PascalCase identifiers — schema names, agent names, tool names, workflow names",
+      "name": "entity.name.type.mail",
+      "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.key-value.mail",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.section.block.begin.mail",
+          "match": "\\{"
+        },
+        {
+          "name": "punctuation.section.block.end.mail",
+          "match": "\\}"
+        }
+      ]
+    }
+  }
+}

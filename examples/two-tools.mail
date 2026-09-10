@@ -1,0 +1,24 @@
+schema TwoToolRequest  { value: String }
+schema TwoToolResponse { result: String }
+
+tool ToolA { input { value: String } output { result: String } }
+tool ToolB { input { value: String } output { result: String } }
+
+agent RestrictedAgent {
+  model GPT
+  output TwoToolResponse
+  tools { allow ToolA }
+}
+
+workflow TwoToolFlow {
+  input TwoToolRequest
+  output TwoToolResponse
+
+  step run_agent {
+    agent RestrictedAgent
+    context { input }
+    save as result
+  }
+
+  finish with result
+}
