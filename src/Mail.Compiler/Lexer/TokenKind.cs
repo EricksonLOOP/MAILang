@@ -21,6 +21,13 @@ public enum TokenKind
     Allow,
     System,
 
+    // Loop keywords
+    Loop,
+    Break,
+    Continue,
+    Max,
+    Params,
+
     // Conditional keywords
     If,
     Else,
@@ -37,6 +44,11 @@ public enum TokenKind
     KwString,
     KwBool,
     KwInt,
+    KwDecimal,
+
+    // New declaration and modifier keywords
+    Enum,
+    Optional,
 
     // String literals
     StringLiteral,
@@ -47,6 +59,7 @@ public enum TokenKind
 
     // Punctuation
     Colon,
+    Assign,
     Dot,
     Comma,
     LBrace,

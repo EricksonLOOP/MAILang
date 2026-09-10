@@ -42,6 +42,14 @@ public sealed class Lexer(string source, string filePath)
         ["String"]   = TokenKind.KwString,
         ["Bool"]     = TokenKind.KwBool,
         ["Int"]      = TokenKind.KwInt,
+        ["Decimal"]  = TokenKind.KwDecimal,
+        ["enum"]     = TokenKind.Enum,
+        ["optional"] = TokenKind.Optional,
+        ["loop"]     = TokenKind.Loop,
+        ["break"]    = TokenKind.Break,
+        ["continue"] = TokenKind.Continue,
+        ["max"]      = TokenKind.Max,
+        ["params"]   = TokenKind.Params,
     };
 
     public (IReadOnlyList<Token> Tokens, IReadOnlyList<Diagnostic> Errors) Tokenize()
@@ -90,10 +98,7 @@ public sealed class Lexer(string source, string filePath)
                     }
                     else
                     {
-                        _errors.Add(new Diagnostic(DiagnosticSeverity.Error, "MAIL-PARSE",
-                            $"Unexpected character '='. Did you mean '=='?", loc));
-                        tokens.Add(new Token(TokenKind.Error, "=", loc));
-                        Advance();
+                        tokens.Add(Single(TokenKind.Assign, loc));
                     }
                     break;
                 case '!':
