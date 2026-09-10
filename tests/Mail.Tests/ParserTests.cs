@@ -37,7 +37,7 @@ public class ParserTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
         var agent = plan.Agents["StatusAgent"];
-        Assert.Contains("GetOrderStatus", agent.AllowedTools);
+        Assert.Contains(agent.AllowedTools, e => e.ToolName == "GetOrderStatus");
     }
 
     [Fact]
@@ -45,10 +45,11 @@ public class ParserTests
     {
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
-        var step = Assert.Single(plan.Workflow.Steps);
-        Assert.Equal("check_status", step.Name);
-        Assert.IsType<AgentBody>(step.Body);
-        var body = (AgentBody)step.Body;
+        var item = Assert.Single(plan.Workflow.Items);
+        var si = Assert.IsType<StepItem>(item);
+        Assert.Equal("check_status", si.Step.Name);
+        Assert.IsType<AgentBody>(si.Step.Body);
+        var body = (AgentBody)si.Step.Body;
         Assert.Equal("StatusAgent", body.AgentName);
         Assert.Contains("input", body.ContextNames);
     }

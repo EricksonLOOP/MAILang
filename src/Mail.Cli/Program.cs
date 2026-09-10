@@ -184,13 +184,15 @@ static List<ModelResponse> BuildSimulatedScript(ValidatedPlan plan, ToolRegistry
     // Find the first agent step and its first allowed tool to build a realistic script.
     var script = new List<ModelResponse>();
 
-    foreach (var step in plan.Workflow.Steps)
+    foreach (var item in plan.Workflow.Items)
     {
+        if (item is not Mail.Compiler.Ast.StepItem si) continue;
+        var step = si.Step;
         if (step.Body is not Mail.Compiler.Ast.AgentBody ab) continue;
         if (!plan.Agents.TryGetValue(ab.AgentName, out var agent)) continue;
         if (agent.AllowedTools.Count == 0) continue;
 
-        var firstTool = agent.AllowedTools[0];
+        var firstTool = agent.AllowedTools[0].ToolName;
         if (!plan.Tools.TryGetValue(firstTool, out var toolDecl)) continue;
 
         // Build args from input schema fields that match tool input fields
@@ -209,7 +211,7 @@ static List<ModelResponse> BuildSimulatedScript(ValidatedPlan plan, ToolRegistry
 
         // First response: call the first tool
         script.Add(new ModelResponse(
-            ToolCalls: [new ToolCallRequest("sim-call-1", firstTool, args.ToImmutable())],
+            ToolCalls: [new ToolCallRequest("sim-call-1", agent.AllowedTools[0].ToolName, args.ToImmutable())],
             Text: null));
 
         // Second response: return a JSON that satisfies the agent's output type
