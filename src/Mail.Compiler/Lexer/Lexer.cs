@@ -29,6 +29,16 @@ public sealed class Lexer(string source, string filePath)
         ["tools"]    = TokenKind.Tools,
         ["allow"]    = TokenKind.Allow,
         ["system"]   = TokenKind.System,
+        ["if"]       = TokenKind.If,
+        ["else"]     = TokenKind.Else,
+        ["when"]     = TokenKind.When,
+        ["require"]  = TokenKind.Require,
+        ["then"]     = TokenKind.Then,
+        ["not"]      = TokenKind.Not,
+        ["and"]      = TokenKind.And,
+        ["or"]       = TokenKind.Or,
+        ["true"]     = TokenKind.True,
+        ["false"]    = TokenKind.False,
         ["String"]   = TokenKind.KwString,
         ["Bool"]     = TokenKind.KwBool,
         ["Int"]      = TokenKind.KwInt,
@@ -56,6 +66,12 @@ public sealed class Lexer(string source, string filePath)
                 continue;
             }
 
+            if (char.IsDigit(ch))
+            {
+                tokens.Add(ReadInteger(loc));
+                continue;
+            }
+
             switch (ch)
             {
                 case '"':  tokens.Add(ReadString(loc)); break;
@@ -64,6 +80,58 @@ public sealed class Lexer(string source, string filePath)
                 case ',':  tokens.Add(Single(TokenKind.Comma, loc)); break;
                 case '{':  tokens.Add(Single(TokenKind.LBrace, loc)); break;
                 case '}':  tokens.Add(Single(TokenKind.RBrace, loc)); break;
+                case '(':  tokens.Add(Single(TokenKind.LParen, loc)); break;
+                case ')':  tokens.Add(Single(TokenKind.RParen, loc)); break;
+                case '=':
+                    if (_pos + 1 < source.Length && source[_pos + 1] == '=')
+                    {
+                        _pos += 2; _col += 2;
+                        tokens.Add(new Token(TokenKind.EqEq, "==", loc));
+                    }
+                    else
+                    {
+                        _errors.Add(new Diagnostic(DiagnosticSeverity.Error, "MAIL-PARSE",
+                            $"Unexpected character '='. Did you mean '=='?", loc));
+                        tokens.Add(new Token(TokenKind.Error, "=", loc));
+                        Advance();
+                    }
+                    break;
+                case '!':
+                    if (_pos + 1 < source.Length && source[_pos + 1] == '=')
+                    {
+                        _pos += 2; _col += 2;
+                        tokens.Add(new Token(TokenKind.BangEq, "!=", loc));
+                    }
+                    else
+                    {
+                        _errors.Add(new Diagnostic(DiagnosticSeverity.Error, "MAIL-PARSE",
+                            $"Unexpected character '!'. Did you mean '!='?", loc));
+                        tokens.Add(new Token(TokenKind.Error, "!", loc));
+                        Advance();
+                    }
+                    break;
+                case '<':
+                    if (_pos + 1 < source.Length && source[_pos + 1] == '=')
+                    {
+                        _pos += 2; _col += 2;
+                        tokens.Add(new Token(TokenKind.LtEq, "<=", loc));
+                    }
+                    else
+                    {
+                        tokens.Add(Single(TokenKind.Lt, loc));
+                    }
+                    break;
+                case '>':
+                    if (_pos + 1 < source.Length && source[_pos + 1] == '=')
+                    {
+                        _pos += 2; _col += 2;
+                        tokens.Add(new Token(TokenKind.GtEq, ">=", loc));
+                    }
+                    else
+                    {
+                        tokens.Add(Single(TokenKind.Gt, loc));
+                    }
+                    break;
                 default:
                     _errors.Add(new Diagnostic(
                         DiagnosticSeverity.Error,
@@ -77,6 +145,15 @@ public sealed class Lexer(string source, string filePath)
         }
 
         return (tokens, _errors);
+    }
+
+    private Token ReadInteger(SourceLocation loc)
+    {
+        var start = _pos;
+        while (_pos < source.Length && char.IsDigit(source[_pos]))
+            Advance();
+        var text = source[start.._pos];
+        return new Token(TokenKind.IntLiteral, text, loc);
     }
 
     private Token Single(TokenKind kind, SourceLocation loc)
