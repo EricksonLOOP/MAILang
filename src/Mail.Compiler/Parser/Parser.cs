@@ -61,12 +61,14 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         Expect(TokenKind.LBrace);
         var input = ParseFieldDecls();
         Expect(TokenKind.RBrace);
+        var requireInput = TryParseRequireBlock(isInput: true);   // immediately after input block
         Expect(TokenKind.Output);
         Expect(TokenKind.LBrace);
         var output = ParseFieldDecls();
         Expect(TokenKind.RBrace);
+        var requireOutput = TryParseRequireBlock(isInput: false);  // immediately after output block
         Expect(TokenKind.RBrace);
-        return new ToolDecl(name, input, output, loc);
+        return new ToolDecl(name, input, output, loc, requireInput, requireOutput);
     }
 
     private AgentDecl? ParseAgent()
@@ -86,7 +88,7 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         while (IsKind(TokenKind.System))
         {
             var sysLoc = Current().Location;
-            Advance(); // consume 'system'
+            Advance();
 
             if (IsKind(TokenKind.StringLiteral) || IsKind(TokenKind.TripleStringLiteral))
             {
@@ -115,14 +117,26 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             }
         }
 
+        // Optional typed input
+        TypeRef? inputType = null;
+        Expr? requireInput = null;
+        if (IsKind(TokenKind.Input))
+        {
+            Advance();
+            inputType = ParseTypeRef();
+            requireInput = TryParseRequireBlock(isInput: true);  // immediately after input TypeRef
+        }
+
         Expect(TokenKind.Output);
         var outputType = ParseTypeRef();
+        var requireOutput = TryParseRequireBlock(isInput: false);  // immediately after output TypeRef
         Expect(TokenKind.Tools);
         Expect(TokenKind.LBrace);
         var allowed = ParseAllowList();
         Expect(TokenKind.RBrace);
         Expect(TokenKind.RBrace);
-        return new AgentDecl(name, modelName, outputType, allowed, loc, systemPrompt);
+        return new AgentDecl(name, modelName, inputType, outputType, allowed, loc,
+            systemPrompt, requireInput, requireOutput);
     }
 
     private WorkflowDecl? ParseWorkflow()
@@ -134,14 +148,35 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         Expect(TokenKind.LBrace);
         Expect(TokenKind.Input);
         var inputType = ParseTypeRef();
+        var requireInput = TryParseRequireBlock(isInput: true);    // immediately after input TypeRef
         Expect(TokenKind.Output);
         var outputType = ParseTypeRef();
-        var steps = ParseSteps();
+        var requireOutput = TryParseRequireBlock(isInput: false);   // immediately after output TypeRef
+        var items = ParseWorkflowItems();
         Expect(TokenKind.Finish);
         Expect(TokenKind.With);
         var finish = ParseExpr();
         Expect(TokenKind.RBrace);
-        return new WorkflowDecl(name, inputType, outputType, steps, finish, loc);
+        return new WorkflowDecl(name, inputType, outputType, items, finish, loc,
+            requireInput, requireOutput);
+    }
+
+    // ── Require blocks ────────────────────────────────────────────────────────
+
+    private Expr? TryParseRequireBlock(bool isInput)
+    {
+        if (!IsKind(TokenKind.Require)) return null;
+        var kind = isInput ? TokenKind.Input : TokenKind.Output;
+        // Peek: require input or require output
+        if (_pos + 1 >= tokens.Count) return null;
+        if (tokens[_pos + 1].Kind != kind) return null;
+
+        Advance(); // consume 'require'
+        Advance(); // consume 'input'/'output'
+        Expect(TokenKind.LBrace);
+        var expr = ParseExpr();
+        Expect(TokenKind.RBrace);
+        return expr;
     }
 
     // ── Fields and types ─────────────────────────────────────────────────────
@@ -172,32 +207,73 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             return new NamedTypeRef(tok.Text, tok.Location);
         }
         Error($"Expected type, got '{tok.Text}'", tok.Location);
-        return new PrimitiveTypeRef(PrimitiveKind.String); // error recovery placeholder
+        return new PrimitiveTypeRef(PrimitiveKind.String);
     }
 
     // ── Allow list ───────────────────────────────────────────────────────────
 
-    private List<string> ParseAllowList()
+    private List<AllowedToolEntry> ParseAllowList()
     {
-        var names = new List<string>();
+        var entries = new List<AllowedToolEntry>();
         while (!IsKind(TokenKind.RBrace) && !IsEof())
         {
             Expect(TokenKind.Allow);
             var n = ExpectIdentifier();
-            if (n is not null) names.Add(n);
+            if (n is null) continue;
+            Expr? guard = null;
+            if (IsKind(TokenKind.When))
+            {
+                Advance();
+                guard = ParseExpr();
+            }
+            entries.Add(new AllowedToolEntry(n, guard));
         }
-        return names;
+        return entries;
+    }
+
+    // ── Workflow items ────────────────────────────────────────────────────────
+
+    private List<WorkflowItem> ParseWorkflowItems()
+    {
+        var items = new List<WorkflowItem>();
+        while (!IsEof())
+        {
+            if (IsKind(TokenKind.Step))
+            {
+                items.Add(new StepItem(ParseStep()));
+            }
+            else if (IsKind(TokenKind.If))
+            {
+                items.Add(ParseIfItem());
+            }
+            else
+            {
+                break;
+            }
+        }
+        return items;
+    }
+
+    private IfItem ParseIfItem()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.If);
+        var condition = ParseExpr();
+        Expect(TokenKind.LBrace);
+        var thenItems = ParseWorkflowItems();
+        Expect(TokenKind.RBrace);
+        List<WorkflowItem>? elseItems = null;
+        if (IsKind(TokenKind.Else))
+        {
+            Advance();
+            Expect(TokenKind.LBrace);
+            elseItems = ParseWorkflowItems();
+            Expect(TokenKind.RBrace);
+        }
+        return new IfItem(condition, thenItems, elseItems, loc);
     }
 
     // ── Steps ────────────────────────────────────────────────────────────────
-
-    private List<StepDecl> ParseSteps()
-    {
-        var steps = new List<StepDecl>();
-        while (IsKind(TokenKind.Step) && !IsEof())
-            steps.Add(ParseStep());
-        return steps;
-    }
 
     private StepDecl ParseStep()
     {
@@ -219,8 +295,27 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
             return ParseCallBody();
         if (IsKind(TokenKind.Agent))
             return ParseAgentBody();
-        Error($"Expected 'call' or 'agent' in step body, got '{Current().Text}'", Current().Location);
+        if (IsKind(TokenKind.If))
+            return ParseConditionalStepBody();
+        Error($"Expected 'call', 'agent', or 'if' in step body, got '{Current().Text}'", Current().Location);
         return new CallBody("?", new Dictionary<string, Expr>());
+    }
+
+    private ConditionalStepBody ParseConditionalStepBody()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.If);
+        var condition = ParseExpr();
+        Expect(TokenKind.LBrace);
+        var thenBody = ParseStepBody();
+        Expect(TokenKind.RBrace);
+        if (!IsKind(TokenKind.Else))
+            Error("Expected 'else' in step-level conditional — both branches must produce a value.", Current().Location);
+        Advance(); // consume 'else'
+        Expect(TokenKind.LBrace);
+        var elseBody = ParseStepBody();
+        Expect(TokenKind.RBrace);
+        return new ConditionalStepBody(condition, thenBody, elseBody, loc);
     }
 
     private CallBody ParseCallBody()
@@ -237,11 +332,20 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     {
         Expect(TokenKind.Agent);
         var agentName = ExpectIdentifier() ?? "?";
+
+        // Optional: input expr
+        Expr? inputExpr = null;
+        if (IsKind(TokenKind.Input))
+        {
+            Advance();
+            inputExpr = ParseExpr();
+        }
+
         Expect(TokenKind.Context);
         Expect(TokenKind.LBrace);
         var names = ParseNameList();
         Expect(TokenKind.RBrace);
-        return new AgentBody(agentName, names);
+        return new AgentBody(agentName, inputExpr, names);
     }
 
     private Dictionary<string, Expr> ParseArgList()
@@ -271,14 +375,141 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         return names;
     }
 
-    // ── Expressions ──────────────────────────────────────────────────────────
+    // ── Expressions — precedence-climbing ────────────────────────────────────
+    //
+    // Precedence (low → high):
+    //   5. if cond then expr else expr   (ConditionalExpr)
+    //   4. or
+    //   3. and
+    //   2. not expr                      (prefix)
+    //   1. == != < <= > >=              (comparison, non-chainable)
+    //   0. atom: literal, (expr), name.field
 
-    private Expr ParseExpr()
+    private Expr ParseExpr() => ParseConditionalExpr();
+
+    private Expr ParseConditionalExpr()
+    {
+        if (IsKind(TokenKind.If))
+        {
+            var loc = Current().Location;
+            Advance();
+            var cond = ParseOrExpr();
+            Expect(TokenKind.Then);
+            var then = ParseConditionalExpr();
+            Expect(TokenKind.Else);
+            var @else = ParseConditionalExpr();
+            return new ConditionalExpr(cond, then, @else, loc);
+        }
+        return ParseOrExpr();
+    }
+
+    private Expr ParseOrExpr()
+    {
+        var left = ParseAndExpr();
+        while (IsKind(TokenKind.Or))
+        {
+            var loc = Current().Location;
+            Advance();
+            var right = ParseAndExpr();
+            left = new BinaryExpr(BinaryOp.Or, left, right, loc);
+        }
+        return left;
+    }
+
+    private Expr ParseAndExpr()
+    {
+        var left = ParseNotExpr();
+        while (IsKind(TokenKind.And))
+        {
+            var loc = Current().Location;
+            Advance();
+            var right = ParseNotExpr();
+            left = new BinaryExpr(BinaryOp.And, left, right, loc);
+        }
+        return left;
+    }
+
+    private Expr ParseNotExpr()
+    {
+        if (IsKind(TokenKind.Not))
+        {
+            var loc = Current().Location;
+            Advance();
+            var operand = ParseNotExpr();
+            return new NotExpr(operand, loc);
+        }
+        return ParseComparisonExpr();
+    }
+
+    private Expr ParseComparisonExpr()
+    {
+        var left = ParseAtom();
+        var op = Current().Kind switch
+        {
+            TokenKind.EqEq   => (BinaryOp?)BinaryOp.Eq,
+            TokenKind.BangEq => BinaryOp.Ne,
+            TokenKind.Lt     => BinaryOp.Lt,
+            TokenKind.LtEq   => BinaryOp.Le,
+            TokenKind.Gt     => BinaryOp.Gt,
+            TokenKind.GtEq   => BinaryOp.Ge,
+            _                => null,
+        };
+        if (op is null) return left;
+        var loc = Current().Location;
+        Advance();
+        var right = ParseAtom();
+
+        // Reject chaining: a < b < c is a compile error
+        var next = Current().Kind;
+        if (next is TokenKind.EqEq or TokenKind.BangEq or TokenKind.Lt
+                 or TokenKind.LtEq or TokenKind.Gt   or TokenKind.GtEq)
+        {
+            Error("Chained comparisons are not allowed. Use parentheses or 'and' to combine conditions.", Current().Location);
+        }
+
+        return new BinaryExpr(op.Value, left, right, loc);
+    }
+
+    private Expr ParseAtom()
     {
         var tok = Current();
+
+        // Parenthesized expression
+        if (tok.Kind == TokenKind.LParen)
+        {
+            Advance();
+            var inner = ParseExpr();
+            Expect(TokenKind.RParen);
+            return inner;
+        }
+
+        // String literal
+        if (tok.Kind == TokenKind.StringLiteral || tok.Kind == TokenKind.TripleStringLiteral)
+        {
+            Advance();
+            return new StringLiteralExpr(tok.Text, tok.Location);
+        }
+
+        // Integer literal
+        if (tok.Kind == TokenKind.IntLiteral)
+        {
+            Advance();
+            if (!long.TryParse(tok.Text, out var intVal))
+            {
+                Error($"Integer literal '{tok.Text}' is out of range for Int64.", tok.Location);
+                intVal = 0;
+            }
+            return new IntLiteralExpr(intVal, tok.Location);
+        }
+
+        // Bool literals
+        if (tok.Kind == TokenKind.True)  { Advance(); return new BoolLiteralExpr(true,  tok.Location); }
+        if (tok.Kind == TokenKind.False) { Advance(); return new BoolLiteralExpr(false, tok.Location); }
+
+        // Name / field-access (existing atoms)
         if (tok.Kind != TokenKind.Identifier && !IsKeyword(tok.Kind))
         {
-            Error($"Expected identifier in expression, got '{tok.Text}'", tok.Location);
+            Error($"Expected expression, got '{tok.Text}'", tok.Location);
             return new NameExpr("?", tok.Location);
         }
         Advance();
@@ -316,7 +547,6 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     private string? ExpectIdentifier()
     {
         var tok = Current();
-        // Allow any word-like token as an identifier (covers keyword-named schemas etc.)
         if (tok.Kind == TokenKind.Identifier || IsKeyword(tok.Kind))
         {
             Advance();
@@ -327,11 +557,13 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     }
 
     private static bool IsKeyword(TokenKind kind) =>
-        kind is TokenKind.Schema or TokenKind.Tool or TokenKind.Agent or TokenKind.Workflow
-             or TokenKind.Step or TokenKind.Call or TokenKind.Finish or TokenKind.With
-             or TokenKind.Save or TokenKind.As or TokenKind.Context or TokenKind.Input
-             or TokenKind.Output or TokenKind.Model or TokenKind.Tools or TokenKind.Allow
-             or TokenKind.System;
+        kind is TokenKind.Schema   or TokenKind.Tool      or TokenKind.Agent    or TokenKind.Workflow
+             or TokenKind.Step     or TokenKind.Call      or TokenKind.Finish   or TokenKind.With
+             or TokenKind.Save     or TokenKind.As        or TokenKind.Context  or TokenKind.Input
+             or TokenKind.Output   or TokenKind.Model     or TokenKind.Tools    or TokenKind.Allow
+             or TokenKind.System   or TokenKind.If        or TokenKind.Else     or TokenKind.When
+             or TokenKind.Require  or TokenKind.Then      or TokenKind.Not      or TokenKind.And
+             or TokenKind.Or       or TokenKind.True      or TokenKind.False;
 
     private void SkipToNextRBrace()
     {
@@ -372,11 +604,29 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         TokenKind.Tools     => "tools",
         TokenKind.Allow     => "allow",
         TokenKind.System    => "system",
+        TokenKind.If        => "if",
+        TokenKind.Else      => "else",
+        TokenKind.When      => "when",
+        TokenKind.Require   => "require",
+        TokenKind.Then      => "then",
+        TokenKind.Not       => "not",
+        TokenKind.And       => "and",
+        TokenKind.Or        => "or",
+        TokenKind.True      => "true",
+        TokenKind.False     => "false",
         TokenKind.LBrace    => "{",
         TokenKind.RBrace    => "}",
+        TokenKind.LParen    => "(",
+        TokenKind.RParen    => ")",
         TokenKind.Colon     => ":",
         TokenKind.Dot       => ".",
         TokenKind.Comma     => ",",
+        TokenKind.EqEq      => "==",
+        TokenKind.BangEq    => "!=",
+        TokenKind.Lt        => "<",
+        TokenKind.LtEq      => "<=",
+        TokenKind.Gt        => ">",
+        TokenKind.GtEq      => ">=",
         TokenKind.Identifier => "<identifier>",
         _ => kind.ToString(),
     };
