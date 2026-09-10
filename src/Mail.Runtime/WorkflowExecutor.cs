@@ -22,55 +22,94 @@ public sealed class WorkflowExecutor(
     {
         ContractVerifier.Verify(plan, tools);
 
-        var logger = new EventLogger(executionId ?? Guid.NewGuid().ToString("N"));
+        var planId = plan.FilePath ?? plan.Workflow.Name;
+        var ctx = executionId is not null
+            ? new ExecutionContext(new RunId(executionId), limits, planId)
+            : new ExecutionContext(limits, planId);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(limits.Timeout);
         var linkedCt = timeoutCts.Token;
 
+        ctx.Logger.Log(EventLogger.Kinds.ExecutionCreated,
+            $"Execution '{ctx.RunId}' created for workflow '{plan.Workflow.Name}'.");
+
+        ctx.Transition(RunStatus.Running);
+        ctx.Logger.Log("execution.started",
+            $"Workflow '{plan.Workflow.Name}' started.");
+
         var state = new ExecutionState(input);
-        logger.Log("execution.started", $"Workflow '{plan.Workflow.Name}' started.");
 
         try
         {
-            // Validate workflow input contract
             if (plan.Workflow.RequireInput is not null)
             {
                 if (!ExprEvaluator.EvalBool(plan.Workflow.RequireInput, state, plan.Workflow.Name))
                 {
-                    logger.Log("contract.rejected", $"Workflow '{plan.Workflow.Name}' input contract rejected.");
-                    throw new ContractViolationException(plan.Workflow.Name, "Input contract (require input) was not satisfied.");
+                    ctx.Logger.Log("contract.rejected",
+                        $"Workflow '{plan.Workflow.Name}' input contract rejected.");
+                    throw new ContractViolationException(plan.Workflow.Name,
+                        "Input contract (require input) was not satisfied.");
                 }
             }
 
-            state = await ExecuteWorkflowItemsAsync(plan.Workflow.Items, state, providerName, logger, linkedCt);
+            state = await ExecuteWorkflowItemsAsync(plan.Workflow.Items, state, providerName, ctx, linkedCt);
 
             var output = state.Resolve(plan.Workflow.Finish);
             ValidateOutput(output, plan.Workflow.OutputType);
 
-            // Validate workflow output contract
             if (plan.Workflow.RequireOutput is not null)
             {
                 var outputState = state.Publish("output", output);
                 if (!ExprEvaluator.EvalBool(plan.Workflow.RequireOutput, outputState, plan.Workflow.Name))
                 {
-                    logger.Log("contract.rejected", $"Workflow '{plan.Workflow.Name}' output contract rejected.");
-                    throw new ContractViolationException(plan.Workflow.Name, "Output contract (require output) was not satisfied.");
+                    ctx.Logger.Log("contract.rejected",
+                        $"Workflow '{plan.Workflow.Name}' output contract rejected.");
+                    throw new ContractViolationException(plan.Workflow.Name,
+                        "Output contract (require output) was not satisfied.");
                 }
             }
 
-            logger.Log("execution.succeeded", "Workflow completed successfully.");
-            return new ExecutionResult(true, output, logger.Events, null);
+            ctx.Transition(RunStatus.Succeeded);
+            ctx.Logger.Log("execution.succeeded", "Workflow completed successfully.");
+            ctx.Logger.Log(EventLogger.Kinds.ExecutionEnded,
+                $"Execution '{ctx.RunId}' ended: {RunStatus.Succeeded}.");
+
+            return new ExecutionResult(true, output, ctx.Logger.Events, null,
+                ctx.RunId, RunStatus.Succeeded);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            logger.Log("execution.timeout", "Execution timed out.");
-            return new ExecutionResult(false, null, logger.Events, "Execution timed out.");
+            ctx.Transition(RunStatus.Cancelling);
+            ctx.Logger.Log(EventLogger.Kinds.CancellationRequested, "Execution timed out.");
+            ctx.Transition(RunStatus.Cancelled);
+            ctx.Logger.Log("execution.timeout", "Execution timed out.");
+            ctx.Logger.Log(EventLogger.Kinds.ExecutionEnded,
+                $"Execution '{ctx.RunId}' ended: {RunStatus.Cancelled} (timeout).");
+
+            return new ExecutionResult(false, null, ctx.Logger.Events, "Execution timed out.",
+                ctx.RunId, RunStatus.Cancelled);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            ctx.Transition(RunStatus.Cancelling);
+            ctx.Logger.Log(EventLogger.Kinds.CancellationRequested, "Cancellation requested by caller.");
+            ctx.Transition(RunStatus.Cancelled);
+            ctx.Logger.Log(EventLogger.Kinds.ExecutionEnded,
+                $"Execution '{ctx.RunId}' ended: {RunStatus.Cancelled}.");
+
+            return new ExecutionResult(false, null, ctx.Logger.Events, "Execution was cancelled.",
+                ctx.RunId, RunStatus.Cancelled);
         }
         catch (Exception ex)
         {
-            logger.Log("execution.failed", ex.Message);
-            return new ExecutionResult(false, null, logger.Events, ex.Message);
+            ctx.Transition(RunStatus.Failed);
+            ctx.Logger.Log("execution.failed", ex.Message);
+            ctx.Logger.Log(EventLogger.Kinds.ExecutionEnded,
+                $"Execution '{ctx.RunId}' ended: {RunStatus.Failed}.");
+
+            return new ExecutionResult(false, null, ctx.Logger.Events, ex.Message,
+                ctx.RunId, RunStatus.Failed);
         }
     }
 
@@ -78,7 +117,7 @@ public sealed class WorkflowExecutor(
         IReadOnlyList<WorkflowItem> items,
         ExecutionState state,
         string providerName,
-        EventLogger logger,
+        ExecutionContext ctx,
         CancellationToken ct)
     {
         foreach (var item in items)
@@ -89,35 +128,52 @@ public sealed class WorkflowExecutor(
             {
                 case StepItem si:
                     var step = si.Step;
-                    logger.Log("step.started", $"Step '{step.Name}' started.");
-                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, logger, ct);
+                    var actId = ActivationId.New();
+                    var stepId = StepId.New();
+
+                    ctx.Budget.TrackActivation();
+                    ctx.Logger.Log("step.started",
+                        $"Step '{step.Name}' started.",
+                        stepId: stepId.Value, activationId: actId.Value);
+                    ctx.Logger.Log(EventLogger.Kinds.ActivationStarted,
+                        $"Activation of step '{step.Name}' started.",
+                        stepId: stepId.Value, activationId: actId.Value);
+
+                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, ctx, actId, ct);
                     state = state.Publish(step.SaveAs, result);
-                    logger.Log("step.completed", $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.");
+
+                    ctx.Logger.Log("step.completed",
+                        $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.",
+                        stepId: stepId.Value, activationId: actId.Value);
+                    ctx.Logger.Log(EventLogger.Kinds.ActivationConfirmed,
+                        $"Activation of step '{step.Name}' confirmed.",
+                        stepId: stepId.Value, activationId: actId.Value);
                     break;
 
                 case IfItem ifItem:
                     ct.ThrowIfCancellationRequested();
                     var condValue = ExprEvaluator.EvalBool(ifItem.Condition, state, "if");
-                    logger.Log("branch.selected", $"Branch condition evaluated to {condValue}.");
+                    ctx.Logger.Log("branch.selected", $"Branch condition evaluated to {condValue}.");
 
                     if (condValue)
                     {
-                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Then, state, providerName, logger, ct);
+                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Then, state, providerName, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     else if (ifItem.Else is not null)
                     {
-                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Else, state, providerName, logger, ct);
+                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Else, state, providerName, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
-                    // No else and condition false: no state change
                     break;
 
                 case LoopItem loopItem:
-                    logger.Log("loop.started", $"Loop '{loopItem.Name}' started (max {loopItem.MaxIterations} iterations).");
-                    var loopResult = await ExecuteLoopAsync(loopItem, state, providerName, logger, ct);
+                    ctx.Logger.Log("loop.started",
+                        $"Loop '{loopItem.Name}' started (max {loopItem.MaxIterations} iterations).");
+                    var loopResult = await ExecuteLoopAsync(loopItem, state, providerName, ctx, ct);
                     state = state.Publish(loopItem.SaveAs, loopResult);
-                    logger.Log("loop.completed", $"Loop '{loopItem.Name}' completed, saved as '{loopItem.SaveAs}'.");
+                    ctx.Logger.Log("loop.completed",
+                        $"Loop '{loopItem.Name}' completed, saved as '{loopItem.SaveAs}'.");
                     break;
             }
         }
@@ -128,10 +184,9 @@ public sealed class WorkflowExecutor(
         LoopItem loop,
         ExecutionState outerState,
         string providerName,
-        EventLogger logger,
+        ExecutionContext ctx,
         CancellationToken ct)
     {
-        // Build initial loop-param bindings from init expressions evaluated against outer state
         var paramBindings = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
         foreach (var param in loop.Params)
             paramBindings[param.Name] = outerState.Resolve(param.InitExpr);
@@ -139,22 +194,23 @@ public sealed class WorkflowExecutor(
         for (int iteration = 1; iteration <= loop.MaxIterations; iteration++)
         {
             ct.ThrowIfCancellationRequested();
-            logger.Log("loop.iteration", $"Loop '{loop.Name}' iteration {iteration}/{loop.MaxIterations}.");
+            ctx.Logger.Log("loop.iteration",
+                $"Loop '{loop.Name}' iteration {iteration}/{loop.MaxIterations}.");
 
-            // Build iteration state: outer bindings + current param values
             var iterState = outerState;
             foreach (var (name, value) in paramBindings)
                 iterState = iterState.Publish(name, value);
 
             try
             {
-                await ExecuteLoopBodyAsync(loop.Body, iterState, providerName, logger, ct);
+                await ExecuteLoopBodyAsync(loop.Body, iterState, providerName, ctx, ct);
                 throw new InvalidOperationException(
                     $"Loop '{loop.Name}' body completed iteration {iteration} without 'break' or 'continue'.");
             }
             catch (LoopBreakSignal brk)
             {
-                logger.Log("loop.break", $"Loop '{loop.Name}' exited via 'break' on iteration {iteration}.");
+                ctx.Logger.Log("loop.break",
+                    $"Loop '{loop.Name}' exited via 'break' on iteration {iteration}.");
                 return brk.Output;
             }
             catch (LoopContinueSignal cont)
@@ -163,7 +219,6 @@ public sealed class WorkflowExecutor(
                     throw new InvalidOperationException(
                         $"Loop '{loop.Name}' reached maximum of {loop.MaxIterations} iterations without breaking.");
 
-                // Update param bindings for the next iteration
                 paramBindings.Clear();
                 foreach (var param in loop.Params)
                 {
@@ -176,17 +231,14 @@ public sealed class WorkflowExecutor(
             }
         }
 
-        // Should be unreachable: the catch(LoopContinueSignal) above throws when iteration == MaxIterations
         throw new InvalidOperationException($"Loop '{loop.Name}' exited unexpectedly.");
     }
 
-    // Returns the updated ExecutionState after the items complete normally.
-    // Throws LoopBreakSignal or LoopContinueSignal when those statements are reached.
     private async Task<ExecutionState> ExecuteLoopBodyAsync(
         IReadOnlyList<WorkflowItem> items,
         ExecutionState state,
         string providerName,
-        EventLogger logger,
+        ExecutionContext ctx,
         CancellationToken ct)
     {
         foreach (var item in items)
@@ -197,35 +249,52 @@ public sealed class WorkflowExecutor(
             {
                 case StepItem si:
                     var step = si.Step;
-                    logger.Log("step.started", $"Step '{step.Name}' started.");
-                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, logger, ct);
+                    var actId = ActivationId.New();
+                    var stepId = StepId.New();
+
+                    ctx.Budget.TrackActivation();
+                    ctx.Logger.Log("step.started",
+                        $"Step '{step.Name}' started.",
+                        stepId: stepId.Value, activationId: actId.Value);
+                    ctx.Logger.Log(EventLogger.Kinds.ActivationStarted,
+                        $"Activation of step '{step.Name}' (loop body) started.",
+                        stepId: stepId.Value, activationId: actId.Value);
+
+                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, ctx, actId, ct);
                     state = state.Publish(step.SaveAs, result);
-                    logger.Log("step.completed", $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.");
+
+                    ctx.Logger.Log("step.completed",
+                        $"Step '{step.Name}' completed, saved as '{step.SaveAs}'.",
+                        stepId: stepId.Value, activationId: actId.Value);
+                    ctx.Logger.Log(EventLogger.Kinds.ActivationConfirmed,
+                        $"Activation of step '{step.Name}' (loop body) confirmed.",
+                        stepId: stepId.Value, activationId: actId.Value);
                     break;
 
                 case IfItem ifItem:
                     ct.ThrowIfCancellationRequested();
                     var condValue = ExprEvaluator.EvalBool(ifItem.Condition, state, "if");
-                    logger.Log("branch.selected", $"Branch condition evaluated to {condValue}.");
+                    ctx.Logger.Log("branch.selected", $"Branch condition evaluated to {condValue}.");
 
                     if (condValue)
                     {
-                        // Signals from within the branch bubble up naturally
-                        var branchState = await ExecuteLoopBodyAsync(ifItem.Then, state, providerName, logger, ct);
+                        var branchState = await ExecuteLoopBodyAsync(ifItem.Then, state, providerName, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     else if (ifItem.Else is not null)
                     {
-                        var branchState = await ExecuteLoopBodyAsync(ifItem.Else, state, providerName, logger, ct);
+                        var branchState = await ExecuteLoopBodyAsync(ifItem.Else, state, providerName, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     break;
 
                 case LoopItem nestedLoop:
-                    logger.Log("loop.started", $"Loop '{nestedLoop.Name}' started (max {nestedLoop.MaxIterations} iterations).");
-                    var loopResult = await ExecuteLoopAsync(nestedLoop, state, providerName, logger, ct);
+                    ctx.Logger.Log("loop.started",
+                        $"Loop '{nestedLoop.Name}' started (max {nestedLoop.MaxIterations} iterations).");
+                    var loopResult = await ExecuteLoopAsync(nestedLoop, state, providerName, ctx, ct);
                     state = state.Publish(nestedLoop.SaveAs, loopResult);
-                    logger.Log("loop.completed", $"Loop '{nestedLoop.Name}' completed, saved as '{nestedLoop.SaveAs}'.");
+                    ctx.Logger.Log("loop.completed",
+                        $"Loop '{nestedLoop.Name}' completed, saved as '{nestedLoop.SaveAs}'.");
                     break;
 
                 case LoopBreakItem brk:
@@ -245,98 +314,138 @@ public sealed class WorkflowExecutor(
         StepBody body,
         ExecutionState state,
         string providerName,
-        EventLogger logger,
+        ExecutionContext ctx,
+        ActivationId actId,
         CancellationToken ct)
     {
         switch (body)
         {
             case CallBody cb:
-                return await ExecuteCallStepAsync(cb, state, ct);
+                return await ExecuteCallStepAsync(cb, state, ctx, actId, ct);
 
             case AgentBody ab:
-                return await ExecuteAgentStepAsync(ab, state, providerName, logger, ct);
+                return await ExecuteAgentStepAsync(ab, state, providerName, ctx, actId, ct);
 
             case ConditionalStepBody csb:
                 var cond = ExprEvaluator.EvalBool(csb.Condition, state, "step if");
-                logger.Log("branch.selected", $"Step branch condition evaluated to {cond}.");
-                return await ExecuteStepBodyAsync(cond ? csb.Then : csb.Else, state, providerName, logger, ct);
+                ctx.Logger.Log("branch.selected",
+                    $"Step branch condition evaluated to {cond}.",
+                    activationId: actId.Value);
+                return await ExecuteStepBodyAsync(
+                    cond ? csb.Then : csb.Else, state, providerName, ctx, actId, ct);
 
             default:
                 throw new InvalidOperationException($"Unknown step body type: {body.GetType().Name}");
         }
     }
 
-    private async Task<MailValue> ExecuteCallStepAsync(CallBody cb, ExecutionState state, CancellationToken ct)
+    private async Task<MailValue> ExecuteCallStepAsync(
+        CallBody cb,
+        ExecutionState state,
+        ExecutionContext ctx,
+        ActivationId actId,
+        CancellationToken ct)
     {
         var tool = plan.Tools[cb.ToolName];
 
-        // Resolve args
         var resolvedArgs = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
         foreach (var (key, expr) in cb.Args)
             resolvedArgs[key] = state.Resolve(expr);
         var inputSchema = BuildSchemaFromValues(resolvedArgs.ToImmutable(), tools.InputContract(cb.ToolName), cb.ToolName);
 
-        // Validate tool input contract
         if (tool.RequireInput is not null)
         {
             var inputState = ExecutionState.WithInput(inputSchema);
             if (!ExprEvaluator.EvalBool(tool.RequireInput, inputState, cb.ToolName))
-                throw new ContractViolationException(cb.ToolName, "Input contract (require input) was not satisfied.");
+                throw new ContractViolationException(cb.ToolName,
+                    "Input contract (require input) was not satisfied.");
         }
 
-        var tracker = new BudgetTracker(limits);
+        var tracker = new BudgetTracker(ctx.Limits);
         tracker.ConsumeToolCall();
 
-        var output = await tools.Resolve(cb.ToolName).ExecuteAsync(inputSchema, ct);
+        ctx.Budget.TrackToolAttempt();
 
-        // Validate tool output contract
+        var opId      = OperationId.New();
+        var attemptId = AttemptId.New();
+
+        ctx.Logger.Log(EventLogger.Kinds.DispatchIntent,
+            $"Dispatching tool '{cb.ToolName}'.",
+            operationId: opId.Value, activationId: actId.Value, attemptId: attemptId.Value);
+
+        MailValue output;
+        try
+        {
+            output = await tools.Resolve(cb.ToolName).ExecuteAsync(inputSchema, ct);
+        }
+        catch (Exception ex)
+        {
+            ctx.Logger.Log(EventLogger.Kinds.AttemptResult,
+                $"Tool '{cb.ToolName}' failed: {ex.Message}",
+                operationId: opId.Value, activationId: actId.Value, attemptId: attemptId.Value);
+            throw;
+        }
+
+        ctx.Logger.Log(EventLogger.Kinds.AttemptResult,
+            $"Tool '{cb.ToolName}' confirmed (effect: {EffectStatus.Confirmed}).",
+            operationId: opId.Value, activationId: actId.Value, attemptId: attemptId.Value);
+
         if (tool.RequireOutput is not null)
         {
             var outputState = ExecutionState.WithInput(inputSchema).Publish("output", output);
             if (!ExprEvaluator.EvalBool(tool.RequireOutput, outputState, cb.ToolName))
-                throw new ContractViolationException(cb.ToolName, "Output contract (require output) was not satisfied.");
+                throw new ContractViolationException(cb.ToolName,
+                    "Output contract (require output) was not satisfied.");
         }
 
         return output;
     }
 
-    private async Task<MailValue> ExecuteAgentStepAsync(AgentBody ab, ExecutionState state, string providerName, EventLogger logger, CancellationToken ct)
+    private async Task<MailValue> ExecuteAgentStepAsync(
+        AgentBody ab,
+        ExecutionState state,
+        string providerName,
+        ExecutionContext ctx,
+        ActivationId actId,
+        CancellationToken ct)
     {
         if (!plan.Agents.TryGetValue(ab.AgentName, out var agentDecl))
             throw new InvalidOperationException($"Agent '{ab.AgentName}' not found in plan.");
 
-        var binding = modelBindings.Resolve(agentDecl.LogicalModelName, providerName);
+        var binding  = modelBindings.Resolve(agentDecl.LogicalModelName, providerName);
         var provider = providers.Resolve(binding.ProviderName);
 
-        // Resolve explicit input expression if provided
         MailValue? agentInput = null;
         if (ab.InputExpr is not null)
             agentInput = state.Resolve(ab.InputExpr);
 
-        // Validate agent input contract
         if (agentDecl.RequireInput is not null && agentInput is not null)
         {
             var inputState = ExecutionState.WithInput(agentInput);
             if (!ExprEvaluator.EvalBool(agentDecl.RequireInput, inputState, ab.AgentName))
-                throw new ContractViolationException(ab.AgentName, "Input contract (require input) was not satisfied.");
+                throw new ContractViolationException(ab.AgentName,
+                    "Input contract (require input) was not satisfied.");
         }
 
         var context = ab.ContextNames
             .Select(name => (name, state.ResolveBinding(name)))
             .ToList();
 
-        var budget = new BudgetTracker(limits);
-        var runner = new AgentRunner(agentDecl, provider, binding.ModelId, _auth, tools, budget, logger, plan.Schemas, agentInput);
+        var budget = new BudgetTracker(ctx.Limits);
+        var runner = new AgentRunner(
+            agentDecl, provider, binding.ModelId, _auth, tools, budget,
+            ctx.Logger, plan.Schemas, agentInput, actId, ctx.Budget);
+
         var result = await runner.RunAsync(context, ct);
 
-        // Validate agent output contract
         if (agentDecl.RequireOutput is not null)
         {
             var outputState = agentInput is not null
                 ? ExecutionState.WithInput(agentInput).Publish("output", result)
                 : new ExecutionState(result);
             if (!ExprEvaluator.EvalBool(agentDecl.RequireOutput, outputState, ab.AgentName))
-                throw new ContractViolationException(ab.AgentName, "Output contract (require output) was not satisfied.");
+                throw new ContractViolationException(ab.AgentName,
+                    "Output contract (require output) was not satisfied.");
         }
 
         return result;

@@ -15,7 +15,9 @@ internal sealed class AgentRunner(
     BudgetTracker budget,
     EventLogger logger,
     IReadOnlyDictionary<string, SchemaDecl>? schemas = null,
-    MailValue? agentInput = null)
+    MailValue? agentInput = null,
+    ActivationId activationId = default,
+    GlobalBudget? globalBudget = null)
 {
     private readonly ArgumentValidator _argValidator = new();
 
@@ -32,20 +34,41 @@ internal sealed class AgentRunner(
         while (true)
         {
             budget.ConsumeModelCall();
+            globalBudget?.TrackModelCall();
 
-            var opId = Guid.NewGuid().ToString("N");
-            logger.Log("model.requested", $"Agent '{agent.Name}' calling model '{modelId}'.", opId);
+            var opId     = OperationId.New();
+            var attemptId = AttemptId.New();
 
-            var response = await provider.CompleteAsync(new ModelRequest(
-                modelId,
-                messages,
-                toolDefs,
-                BuildOutputSchema()), ct);
+            logger.Log("model.requested",
+                $"Agent '{agent.Name}' calling model '{modelId}'.",
+                operationId: opId.Value, activationId: activationId.Value);
+
+            logger.Log(EventLogger.Kinds.DispatchIntent,
+                $"Agent '{agent.Name}' dispatching model call '{modelId}'.",
+                operationId: opId.Value, activationId: activationId.Value, attemptId: attemptId.Value);
+
+            ModelResponse response;
+            try
+            {
+                response = await provider.CompleteAsync(new ModelRequest(
+                    modelId, messages, toolDefs, BuildOutputSchema()), ct);
+            }
+            catch (Exception ex)
+            {
+                logger.Log(EventLogger.Kinds.AttemptResult,
+                    $"Model call failed: {ex.Message}",
+                    operationId: opId.Value, activationId: activationId.Value, attemptId: attemptId.Value);
+                throw;
+            }
+
+            logger.Log(EventLogger.Kinds.AttemptResult,
+                $"Model call returned ({(response.ToolCalls?.Count > 0 ? "tool calls" : "text")}).",
+                operationId: opId.Value, activationId: activationId.Value, attemptId: attemptId.Value);
 
             if (response.ToolCalls is { Count: > 0 })
             {
                 logger.Log("model.tool_requested",
-                    $"{response.ToolCalls.Count} tool call(s) requested.", opId);
+                    $"{response.ToolCalls.Count} tool call(s) requested.", opId.Value);
 
                 ValidateNoDuplicateCallIds(response.ToolCalls);
 
@@ -53,6 +76,8 @@ internal sealed class AgentRunner(
 
                 foreach (var toolCall in response.ToolCalls)
                 {
+                    var toolAttemptId = AttemptId.New();
+
                     try
                     {
                         auth.CheckAllowed(agent, toolCall.ToolName, agentInput);
@@ -61,22 +86,30 @@ internal sealed class AgentRunner(
                     {
                         logger.Log("tool.denied",
                             $"Tool '{toolCall.ToolName}' denied for agent '{agent.Name}'.",
-                            opId, toolCall.CallId);
+                            operationId: opId.Value, callId: toolCall.CallId);
                         throw;
                     }
 
                     logger.Log("tool.authorized",
-                        $"Tool '{toolCall.ToolName}' authorized.", opId, toolCall.CallId);
+                        $"Tool '{toolCall.ToolName}' authorized.",
+                        operationId: opId.Value, callId: toolCall.CallId);
 
                     budget.ConsumeToolCall();
+                    globalBudget?.TrackToolAttempt();
 
                     var input = _argValidator.Validate(
                         toolCall.Arguments,
                         tools.InputContract(toolCall.ToolName),
                         toolCall.ToolName);
 
+                    logger.Log(EventLogger.Kinds.DispatchIntent,
+                        $"Dispatching tool '{toolCall.ToolName}'.",
+                        operationId: opId.Value, callId: toolCall.CallId,
+                        activationId: activationId.Value, attemptId: toolAttemptId.Value);
+
                     logger.Log("tool.started",
-                        $"Tool '{toolCall.ToolName}' starting.", opId, toolCall.CallId);
+                        $"Tool '{toolCall.ToolName}' starting.",
+                        operationId: opId.Value, callId: toolCall.CallId);
 
                     var sw = Stopwatch.StartNew();
                     MailSchema output;
@@ -85,16 +118,29 @@ internal sealed class AgentRunner(
                         output = await tools.Resolve(toolCall.ToolName).ExecuteAsync(input, ct);
                         sw.Stop();
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
                         sw.Stop();
                         logger.Log("tool.failed",
-                            $"Tool '{toolCall.ToolName}' failed.", opId, toolCall.CallId, sw.ElapsedMilliseconds);
+                            $"Tool '{toolCall.ToolName}' failed.",
+                            operationId: opId.Value, callId: toolCall.CallId, durationMs: sw.ElapsedMilliseconds);
+                        logger.Log(EventLogger.Kinds.AttemptResult,
+                            $"Tool '{toolCall.ToolName}' attempt failed: {ex.Message}",
+                            operationId: opId.Value, callId: toolCall.CallId,
+                            activationId: activationId.Value, attemptId: toolAttemptId.Value,
+                            durationMs: sw.ElapsedMilliseconds);
                         throw;
                     }
 
                     logger.Log("tool.completed",
-                        $"Tool '{toolCall.ToolName}' completed.", opId, toolCall.CallId, sw.ElapsedMilliseconds);
+                        $"Tool '{toolCall.ToolName}' completed.",
+                        operationId: opId.Value, callId: toolCall.CallId, durationMs: sw.ElapsedMilliseconds);
+
+                    logger.Log(EventLogger.Kinds.AttemptResult,
+                        $"Tool '{toolCall.ToolName}' confirmed (effect: {EffectStatus.Confirmed}).",
+                        operationId: opId.Value, callId: toolCall.CallId,
+                        activationId: activationId.Value, attemptId: toolAttemptId.Value,
+                        durationMs: sw.ElapsedMilliseconds);
 
                     ValidateOutput(output, tools.OutputContract(toolCall.ToolName), toolCall.ToolName);
 
@@ -109,7 +155,7 @@ internal sealed class AgentRunner(
             {
                 var result = ParseFinalResponse(response.Text);
                 logger.Log("agent.output_validated",
-                    $"Agent '{agent.Name}' output validated.", opId);
+                    $"Agent '{agent.Name}' output validated.", opId.Value);
                 return result;
             }
 
@@ -181,7 +227,6 @@ internal sealed class AgentRunner(
         var defs = new List<ToolDefinition>();
         foreach (var entry in agent.AllowedTools)
         {
-            // Skip tools whose when guard is currently false
             if (entry.WhenGuard is not null && agentInput is not null)
             {
                 try
@@ -192,7 +237,7 @@ internal sealed class AgentRunner(
                 }
                 catch
                 {
-                    continue; // guard evaluation failure → exclude tool
+                    continue;
                 }
             }
 
