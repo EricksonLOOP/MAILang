@@ -1,0 +1,2 @@
+tool GenerateToken { input { prompt: String urgent: Bool } output { token: String } }
+

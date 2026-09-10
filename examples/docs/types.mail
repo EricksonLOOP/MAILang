@@ -1,0 +1,15 @@
+enum Status { Ready, Done }
+schema Detail { label: String }
+schema Payload {
+    text: String
+    enabled: Bool
+    count: Int
+    price: Decimal
+    status: Status
+    details: Detail
+    tags: List<String>
+    note: Nullable<String>
+    nickname: String optional
+    extra: Nullable<String> optional
+}
+workflow Types { input Payload output Payload finish with input }

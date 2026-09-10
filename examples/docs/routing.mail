@@ -1,0 +1,21 @@
+schema Request { urgent: Bool }
+schema Reply { text: String }
+tool Echo { input { text: String } output { text: String } }
+workflow Routing {
+    input Request
+    output Reply
+    if input.urgent {
+        step choose { call Echo { text: "urgent" } save as selected }
+    } else {
+        step choose { call Echo { text: "normal" } save as selected }
+    }
+    step route {
+        if input.urgent {
+            call Echo { text: selected.text }
+        } else {
+            call Echo { text: if input.urgent then "unreachable" else selected.text }
+        }
+        save as reply
+    }
+    finish with reply
+}

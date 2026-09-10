@@ -1,0 +1,24 @@
+schema Request { text: String }
+schema Reply { text: String }
+tool Echo {
+    input { text: String }
+    output { text: String }
+}
+agent Writer {
+    model assistant
+    system "Call Echo and return its JSON result."
+    input Request
+    require input { input.text != "" }
+    output Reply
+    require output { output.text != "" }
+    tools { allow Echo when input.text != "" }
+}
+workflow AgentExample {
+    input Request
+    output Reply
+    step write {
+        agent Writer input input context { input }
+        save as reply
+    }
+    finish with reply
+}

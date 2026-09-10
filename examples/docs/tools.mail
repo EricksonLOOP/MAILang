@@ -1,0 +1,17 @@
+schema Request { text: String }
+schema Reply { text: String }
+tool Echo {
+    input { text: String }
+    require input { input.text != "" }
+    output { text: String }
+    require output { output.text != "" }
+}
+workflow DirectTool {
+    input Request
+    output Reply
+    step echo {
+        call Echo { text: input.text }
+        save as reply
+    }
+    finish with reply
+}

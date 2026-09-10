@@ -1,0 +1,20 @@
+schema Request { target: Int }
+tool Increment { input { value: Int } output { value: Int } }
+workflow Count {
+    input Request
+    require input { input.target >= 0 }
+    output Int
+    loop count {
+        params { value: Int = 0 }
+        output Int
+        max 4
+        if value >= input.target {
+            break value
+        } else {
+            step increment { call Increment { value: value } save as next }
+            continue { value: next.value }
+        }
+        save as total
+    }
+    finish with total
+}

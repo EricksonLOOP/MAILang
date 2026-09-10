@@ -1,0 +1,9 @@
+import "types.mail" as Types
+import "tools.mail" as Tools
+agent Echo {
+  model GPT
+  system "Return the token from GenerateToken."
+  input Types.Request
+  output Types.Response
+  tools { allow Tools.GenerateToken }
+}

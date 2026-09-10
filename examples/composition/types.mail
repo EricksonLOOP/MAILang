@@ -1,0 +1,2 @@
+schema Request { prompt: String urgent: Bool }
+schema Response { token: String }

@@ -1,0 +1,9 @@
+import "types.mail" as Types
+import "tools.mail" as Tools
+workflow Handle {
+  input Types.Request
+  output Types.Response
+  step token { call Tools.GenerateToken { prompt: input.prompt urgent: input.urgent } save as result }
+  finish with result
+}
+

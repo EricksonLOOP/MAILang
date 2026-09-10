@@ -1,0 +1,6 @@
+schema Message { text: String }
+workflow Hello {
+    input Message
+    output Message
+    finish with input
+}

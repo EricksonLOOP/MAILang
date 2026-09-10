@@ -1,0 +1,8 @@
+import "types.mail" as Types
+import "agents.mail" as Agents
+workflow Handle {
+  input Types.Request
+  output Types.Response
+  step echo { agent Agents.Echo input input context { input } save as result }
+  finish with result
+}

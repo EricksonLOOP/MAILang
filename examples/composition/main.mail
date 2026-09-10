@@ -1,0 +1,13 @@
+import "types.mail" as Types
+import "normal.mail" as Normal
+import "urgent.mail" as Urgent
+workflow Main {
+  input Types.Request
+  output Types.Response
+  if input.urgent {
+    step route { workflow Urgent.Handle input input save as result }
+  } else {
+    step route { workflow Normal.Handle input input save as result }
+  }
+  finish with result
+}
