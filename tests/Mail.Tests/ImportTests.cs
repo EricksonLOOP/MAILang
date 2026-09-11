@@ -114,7 +114,7 @@ public class ImportTests
     [Fact] public void QualifiedToolsAndAgentsResolveInDeclaringModule()
     {
         var p = Good("import \"child.mail\" as C workflow Main { input String output String step s { agent C.A input input context {} save as r } finish with input }",
-            ("child.mail", "import \"tools.mail\" as T agent A { model Test input String output String tools { allow T.Echo } }"),
+            ("child.mail", "import \"tools.mail\" as T provider Sim { type simulated } agent A { provider Sim model \"m\" input String output String tools { allow T.Echo } }"),
             ("tools.mail", "tool Echo { input { x: String } output { x: String } }"));
         Assert.Equal("Echo", Assert.Single(p.Agents.Values).AllowedTools[0].ToolName);
     }
@@ -142,8 +142,8 @@ public class ImportTests
 public class SubworkflowRuntimeTests
 {
     private static Task<ExecutionResult> Run(ValidatedPlan plan, ExecutionLimits? limits = null, CancellationToken ct = default) =>
-        new WorkflowExecutor(plan, new ToolRegistry(), new ProviderRegistry(), new ModelBindings(), limits ?? ExecutionLimits.Default)
-            .RunAsync(new MailString("hello"), "simulated", ct);
+        new WorkflowExecutor(plan, new ToolRegistry(), new ProviderRegistry(), limits ?? ExecutionLimits.Default)
+            .RunAsync(new MailString("hello"), ct);
 
     [Fact] public async Task NestedCallsAndReusedAliasesRemainDistinct()
     {

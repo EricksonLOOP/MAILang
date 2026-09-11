@@ -5,12 +5,13 @@ namespace Mail.Compiler;
 
 public sealed record ValidatedPlan(
     ProgramNode Ast,
-    ImmutableDictionary<string, SchemaDecl>   Schemas,
-    ImmutableDictionary<string, EnumDecl>     Enums,
-    ImmutableDictionary<string, ToolDecl>     Tools,
-    ImmutableDictionary<string, AgentDecl>    Agents,
+    ImmutableDictionary<string, SchemaDecl>    Schemas,
+    ImmutableDictionary<string, EnumDecl>      Enums,
+    ImmutableDictionary<string, ToolDecl>      Tools,
+    ImmutableDictionary<string, AgentDecl>     Agents,
+    ImmutableDictionary<string, ProviderDecl>  Providers,
     WorkflowDecl                               EntryWorkflow,
-    ImmutableDictionary<string, WorkflowDecl> Workflows,
+    ImmutableDictionary<string, WorkflowDecl>  Workflows,
     string FilePath)
 {
     // Backward-compat alias — all existing callers continue to work unchanged.

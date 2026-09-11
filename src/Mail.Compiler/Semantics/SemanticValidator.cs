@@ -19,10 +19,11 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
             return (null, _errors);
         }
 
-        var schemas  = new Dictionary<string, SchemaDecl>(StringComparer.Ordinal);
-        var enums    = new Dictionary<string, EnumDecl>(StringComparer.Ordinal);
-        var tools    = new Dictionary<string, ToolDecl>(StringComparer.Ordinal);
-        var agents   = new Dictionary<string, AgentDecl>(StringComparer.Ordinal);
+        var schemas   = new Dictionary<string, SchemaDecl>(StringComparer.Ordinal);
+        var enums     = new Dictionary<string, EnumDecl>(StringComparer.Ordinal);
+        var tools     = new Dictionary<string, ToolDecl>(StringComparer.Ordinal);
+        var agents    = new Dictionary<string, AgentDecl>(StringComparer.Ordinal);
+        var providers = new Dictionary<string, ProviderDecl>(StringComparer.Ordinal);
         WorkflowDecl? workflow = null;
 
         // ── Pass 1: collect top-level declarations ────────────────────────────
@@ -58,8 +59,16 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
                     else
                         workflow = wd;
                     break;
+                case ProviderDecl pd:
+                    CheckDuplicate(providers, pd.Name, pd.Location);
+                    providers[pd.Name] = pd;
+                    break;
             }
         }
+
+        // ── Pass 1.5: validate provider declarations (P03-P09, P12) ──────────
+        foreach (var pd in providers.Values)
+            ValidateProviderDecl(pd);
 
         if (workflow is null)
         {
@@ -80,6 +89,30 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
 
         foreach (var ad in agents.Values)
         {
+            // P11: old agent syntax is no longer supported
+            if (ad.ProviderRef == "")
+            {
+                _errors.Add(new Diagnostic(DiagnosticSeverity.Error, "MAIL-SEM-P11",
+                    $"Agent '{ad.Name}' uses old model syntax. Add a 'provider' field and change " +
+                    $"'model {ad.ModelId}' to 'provider ProviderName' + 'model \"actual-model-id\"'.",
+                    ad.Location));
+            }
+            else
+            {
+                // P01: ProviderRef must resolve to a declared provider
+                if (!providers.ContainsKey(ad.ProviderRef))
+                    Error("MAIL-SEM-P01",
+                        $"Agent '{ad.Name}' references provider '{ad.ProviderRef}' which is not declared in this file. " +
+                        "Declare the provider or use an import alias.",
+                        ad.Location);
+
+                // P02: ModelId must not be empty
+                if (string.IsNullOrEmpty(ad.ModelId))
+                    Error("MAIL-SEM-P02",
+                        $"Agent '{ad.Name}' has an empty model ID. Specify the model ID string after 'model'.",
+                        ad.Location);
+            }
+
             if (ad.InputType is not null)
                 ValidateTypeRef(ad.InputType, schemas, enums);
             ValidateTypeRef(ad.OutputType, schemas, enums);
@@ -182,9 +215,217 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
             enums.ToImmutableDictionary(),
             tools.ToImmutableDictionary(),
             agents.ToImmutableDictionary(),
+            providers.ToImmutableDictionary(),
             workflow,
             workflowsDict,
             filePath), _errors);
+    }
+
+    // ── Provider validation (P03–P09, P12) ───────────────────────────────────
+
+    private void ValidateProviderDecl(ProviderDecl pd)
+    {
+        if (pd.IsSimulated) return; // simulated providers have no HTTP fields
+
+        // P03: non-simulated provider must have all required HTTP fields
+        if (pd.BaseUrl is null)
+            Error("MAIL-SEM-P03", $"Provider '{pd.Name}': HTTP provider requires a 'base_url' field.", pd.Location);
+        if (pd.ApiKey is null)
+            Error("MAIL-SEM-P03", $"Provider '{pd.Name}': HTTP provider requires an 'api_key' field.", pd.Location);
+
+        // P10: api_key must use env() — embedding credentials as string literals is not allowed.
+        // The grammar enforces env() syntax at parse time; this rule documents and re-asserts it.
+        if (pd.ApiKey is not null && string.IsNullOrEmpty(pd.ApiKey.EnvVarName))
+            Error("MAIL-SEM-P10",
+                $"Provider '{pd.Name}': 'api_key' value must use env(\"VAR_NAME\"). " +
+                "Embedding credentials as string literals is not allowed.", pd.Location);
+        if (pd.Call is null)
+            Error("MAIL-SEM-P03", $"Provider '{pd.Name}': HTTP provider requires a 'call' block.", pd.Location);
+        if (pd.Response is null)
+            Error("MAIL-SEM-P03", $"Provider '{pd.Name}': HTTP provider requires a 'response' block.", pd.Location);
+
+        if (pd.Call is not null)
+        {
+            // P04: duplicate header names
+            var seenHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var h in pd.Call.Headers)
+                if (!seenHeaders.Add(h.Name))
+                    Error("MAIL-SEM-P04", $"Provider '{pd.Name}': duplicate header '{h.Name}' in call.headers.", pd.Call.Location);
+
+            // P05: duplicate keys in body fields
+            ValidateBodyFieldDuplicates(pd.Call.Body, pd.Name, "call.body");
+
+            // P07 + P12: validate interpolation variables and $calls context
+            foreach (var f in pd.Call.Body)
+                ValidateBodyValue(f.Value, BodyContext.Root, pd.Name, pd.Call.Location);
+        }
+
+        if (pd.Response is not null)
+        {
+            // P08: response must declare at least text or tool_calls
+            if (pd.Response.TextSelector is null && pd.Response.ToolCalls is null)
+                Error("MAIL-SEM-P08",
+                    $"Provider '{pd.Name}': response block must declare at least 'text' or 'tool_calls'.",
+                    pd.Response.Location);
+
+            // P09: selector syntax validation
+            if (pd.Response.TextSelector is not null && !IsValidSelector(pd.Response.TextSelector))
+                Error("MAIL-SEM-P09",
+                    $"Provider '{pd.Name}': text selector '{pd.Response.TextSelector}' is not a valid selector path.",
+                    pd.Response.Location);
+
+            if (pd.Response.FinishReason is not null)
+            {
+                if (!IsValidSelector(pd.Response.FinishReason.Selector))
+                    Error("MAIL-SEM-P09",
+                        $"Provider '{pd.Name}': finish_reason path '{pd.Response.FinishReason.Selector}' is not valid.",
+                        pd.Response.Location);
+            }
+
+            if (pd.Response.ToolCalls is not null)
+            {
+                if (!IsValidSelector(pd.Response.ToolCalls.Selector))
+                    Error("MAIL-SEM-P09",
+                        $"Provider '{pd.Name}': tool_calls selector '{pd.Response.ToolCalls.Selector}' is not valid.",
+                        pd.Response.Location);
+                if (!IsValidSelector(pd.Response.ToolCalls.IdSelector))
+                    Error("MAIL-SEM-P09",
+                        $"Provider '{pd.Name}': tool_calls.id selector '{pd.Response.ToolCalls.IdSelector}' is not valid.",
+                        pd.Response.Location);
+                if (!IsValidSelector(pd.Response.ToolCalls.ToolNameSelector))
+                    Error("MAIL-SEM-P09",
+                        $"Provider '{pd.Name}': tool_calls.tool_name selector '{pd.Response.ToolCalls.ToolNameSelector}' is not valid.",
+                        pd.Response.Location);
+                if (!IsValidSelector(pd.Response.ToolCalls.ArgsSelector))
+                    Error("MAIL-SEM-P09",
+                        $"Provider '{pd.Name}': tool_calls.args selector '{pd.Response.ToolCalls.ArgsSelector}' is not valid.",
+                        pd.Response.Location);
+            }
+        }
+    }
+
+    private void ValidateBodyFieldDuplicates(IReadOnlyList<BodyFieldDecl> fields, string providerName, string context)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var f in fields)
+            if (!seen.Add(f.Key))
+                Error("MAIL-SEM-P05", $"Provider '{providerName}': duplicate key '{f.Key}' in {context}.", new SourceLocation(filePath, 0, 0));
+    }
+
+    private enum BodyContext { Root, MessageSystem, MessageUser, MessageAssistant, MessageToolResult, ToolsTemplate, CallsTemplate }
+
+    private static readonly HashSet<string> RootVars = new(StringComparer.Ordinal)
+        { "model", "system", "output_schema", "messages", "tools" };
+    private static readonly HashSet<string> TextVars = new(StringComparer.Ordinal)
+        { "text" };
+    private static readonly HashSet<string> AssistantVars = new(StringComparer.Ordinal)
+        { "text" };
+    private static readonly HashSet<string> ToolResultVars = new(StringComparer.Ordinal)
+        { "call_id", "tool_name", "result", "result_json" };
+    private static readonly HashSet<string> ToolsTemplateVars = new(StringComparer.Ordinal)
+        { "name", "input_schema", "output_schema" };
+    private static readonly HashSet<string> CallsTemplateVars = new(StringComparer.Ordinal)
+        { "call_id", "tool_name", "args", "args_json" };
+
+    private void ValidateBodyValue(BodyValue val, BodyContext ctx, string providerName, SourceLocation loc)
+    {
+        switch (val)
+        {
+            case InterpolationBodyValue iv:
+                var allowed = ctx switch
+                {
+                    BodyContext.Root              => RootVars,
+                    BodyContext.MessageSystem     => TextVars,
+                    BodyContext.MessageUser       => TextVars,
+                    BodyContext.MessageAssistant  => AssistantVars,
+                    BodyContext.MessageToolResult => ToolResultVars,
+                    BodyContext.ToolsTemplate     => ToolsTemplateVars,
+                    BodyContext.CallsTemplate     => CallsTemplateVars,
+                    _ => new HashSet<string>(),
+                };
+                if (!allowed.Contains(iv.VarName))
+                    Error("MAIL-SEM-P07",
+                        $"Provider '{providerName}': unknown interpolation variable '${{iv.VarName}}' in this context.",
+                        loc);
+                break;
+
+            case CallsBodyValue cv:
+                // P12: $calls only valid inside assistant message mapping
+                if (ctx != BodyContext.MessageAssistant)
+                    Error("MAIL-SEM-P12",
+                        $"Provider '{providerName}': '$calls' can only appear inside an 'assistant' message mapping.",
+                        loc);
+                foreach (var f in cv.ItemTemplate)
+                    ValidateBodyValue(f.Value, BodyContext.CallsTemplate, providerName, loc);
+                break;
+
+            case MessagesBodyValue mv:
+                // P06: duplicate message types
+                var seenTypes = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var mapping in mv.Mappings)
+                {
+                    if (!seenTypes.Add(mapping.MessageType))
+                        Error("MAIL-SEM-P06",
+                            $"Provider '{providerName}': duplicate message type '{mapping.MessageType}' in $messages block.",
+                            loc);
+
+                    var msgCtx = mapping.MessageType switch
+                    {
+                        "system"      => BodyContext.MessageSystem,
+                        "user"        => BodyContext.MessageUser,
+                        "assistant"   => BodyContext.MessageAssistant,
+                        "tool_result" => BodyContext.MessageToolResult,
+                        _ => BodyContext.Root
+                    };
+                    foreach (var f in mapping.Template)
+                        ValidateBodyValue(f.Value, msgCtx, providerName, loc);
+                }
+                break;
+
+            case ToolsBodyValue tv:
+                foreach (var f in tv.ItemTemplate)
+                    ValidateBodyValue(f.Value, BodyContext.ToolsTemplate, providerName, loc);
+                break;
+
+            case ObjectBodyValue ov:
+                ValidateBodyFieldDuplicates(ov.Fields, providerName, "nested object");
+                foreach (var f in ov.Fields)
+                    ValidateBodyValue(f.Value, ctx, providerName, loc);
+                break;
+        }
+    }
+
+    private static bool IsValidSelector(string selector)
+    {
+        if (string.IsNullOrEmpty(selector)) return false;
+        var parts = selector.Split('.');
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrEmpty(part)) return false;
+            var bracketIdx = part.IndexOf('[');
+            if (bracketIdx < 0)
+            {
+                if (!part.All(c => char.IsLetterOrDigit(c) || c == '_')) return false;
+            }
+            else
+            {
+                var name = part[..bracketIdx];
+                if (string.IsNullOrEmpty(name) || !name.All(c => char.IsLetterOrDigit(c) || c == '_')) return false;
+                if (!part.EndsWith(']')) return false;
+                var inner = part[(bracketIdx + 1)..^1];
+                if (inner == "*") continue;
+                if (int.TryParse(inner, out _)) continue;
+                var eq = inner.IndexOf('=');
+                if (eq > 0)
+                {
+                    var key = inner[..eq];
+                    if (!key.All(c => char.IsLetterOrDigit(c) || c == '_')) return false;
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
     }
 
     // ── Type environment builders ──────────────────────────────────────────────

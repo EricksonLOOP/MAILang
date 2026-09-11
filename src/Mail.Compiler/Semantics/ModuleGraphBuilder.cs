@@ -144,8 +144,15 @@ internal sealed class ModuleGraphBuilder(ISourceResolver resolver, CompilationOp
         SchemaDecl s => s with { Name = Key(file, s), Fields = Fields(file, s.Fields) },
         EnumDecl e => e with { Name = Key(file, e) },
         ToolDecl t => t with { Input = Fields(file, t.Input), Output = Fields(file, t.Output) },
-        AgentDecl a => a with { Name = Key(file, a), InputType = a.InputType is null ? null : BindType(file, a.InputType), OutputType = BindType(file, a.OutputType),
-            AllowedTools = a.AllowedTools.Select(t => t with { ToolName = Resolve(file, t.ToolName, a.Location, typeof(ToolDecl)) }).ToArray() },
+        ProviderDecl p => p with { Name = Key(file, p) },
+        AgentDecl a => a with
+        {
+            Name = Key(file, a),
+            ProviderRef = a.ProviderRef == "" ? "" : Resolve(file, a.ProviderRef, a.Location, typeof(ProviderDecl)),
+            InputType = a.InputType is null ? null : BindType(file, a.InputType),
+            OutputType = BindType(file, a.OutputType),
+            AllowedTools = a.AllowedTools.Select(t => t with { ToolName = Resolve(file, t.ToolName, a.Location, typeof(ToolDecl)) }).ToArray()
+        },
         WorkflowDecl w => w with { Name = Key(file, w), InputType = BindType(file, w.InputType), OutputType = BindType(file, w.OutputType), Items = Items(file, w.Items) },
         _ => d
     };
