@@ -188,18 +188,8 @@ internal static class IntegrationMode
             return;
         }
 
-        var execId   = exEl.GetString()!;
-        var path     = pathEl.GetString()!;
-        var provider = root.TryGetProperty("provider", out var pv)
-            ? pv.GetString() ?? "simulated" : "simulated";
-
-        if (provider != "simulated" && provider != "deepseek")
-        {
-            writer.WriteMessage("run_error",
-                new RunErrorMsg(execId,
-                    $"Provider '{provider}' not supported in integration mode; use 'simulated' or 'deepseek'."));
-            return;
-        }
+        var execId = exEl.GetString()!;
+        var path   = pathEl.GetString()!;
 
         JsonElement? cfgEl = root.TryGetProperty("provider_config", out var cv) ? cv : null;
 
@@ -244,32 +234,61 @@ internal static class IntegrationMode
                         FieldContractBuilder.FromDecls(toolDecl.Output, plan));
                 }
 
-                var providerReg = new ProviderRegistry();
-                var bindings    = new ModelBindings();
-
-                if (provider == "deepseek")
+                // MAIL-PROTO-001: reject run.provider when plan declares providers
+                if (plan.Providers.Count > 0 && root.TryGetProperty("provider", out _))
                 {
-                    string? apiKey  = null;
-                    string? modelId = null;
-                    if (cfgEl is { } cfg)
-                    {
-                        if (cfg.TryGetProperty("api_key", out var keyEl))  apiKey  = keyEl.GetString();
-                        if (cfg.TryGetProperty("model",   out var modEl))  modelId = modEl.GetString();
-                    }
-                    apiKey  ??= Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY") ?? "";
-                    modelId ??= "deepseek-chat";
-                    providerReg.Register("deepseek", new DeepSeekModelProvider(new HttpClient(), apiKey));
-                    foreach (var logicalName in plan.Agents.Values.Select(a => a.LogicalModelName).Distinct())
-                        bindings.Register(logicalName, "deepseek", modelId);
+                    writer.WriteMessage("run_error", new RunErrorMsg(execId,
+                        "[MAIL-PROTO-001] The 'provider' field is not accepted for plans that declare providers in .mail. " +
+                        "Remove 'provider' from the run message."));
+                    return;
                 }
-                else
+
+                // Resolve per-provider scripts from provider_config
+                IReadOnlyList<ScriptStep>? flatScript = null;
+                Dictionary<string, IReadOnlyList<ScriptStep>>? scriptsByProvider = null;
+
+                if (cfgEl is { } cfg)
                 {
-                    IReadOnlyList<ScriptStep>? script = null;
-                    if (cfgEl is { } cfg && cfg.TryGetProperty("script", out var scriptEl))
-                        script = ScriptParser.Parse(scriptEl);
-                    providerReg.Register("simulated", new AdaptiveIntegrationProvider(script));
-                    foreach (var logicalName in plan.Agents.Values.Select(a => a.LogicalModelName).Distinct())
-                        bindings.Register(logicalName, "simulated", "simulated");
+                    if (cfg.TryGetProperty("providers", out var providersEl))
+                    {
+                        scriptsByProvider = new Dictionary<string, IReadOnlyList<ScriptStep>>(StringComparer.Ordinal);
+                        foreach (var prop in providersEl.EnumerateObject())
+                            if (prop.Value.TryGetProperty("script", out var s))
+                                scriptsByProvider[prop.Name] = ScriptParser.Parse(s);
+                    }
+                    else if (cfg.TryGetProperty("script", out var scriptEl))
+                    {
+                        // Legacy flat format — valid only when plan has exactly one simulated provider
+                        var simCount = plan.Providers.Values.Count(p => p.IsSimulated);
+                        if (simCount != 1)
+                        {
+                            writer.WriteMessage("run_error", new RunErrorMsg(execId,
+                                $"[MAIL-PROTO-002] Legacy 'provider_config.script' is ambiguous: plan has {simCount} simulated providers. " +
+                                $"Use 'provider_config.providers.{{ProviderName}}.script'."));
+                            return;
+                        }
+                        flatScript = ScriptParser.Parse(scriptEl);
+                    }
+                }
+
+                var providerReg = new ProviderRegistry();
+
+                foreach (var (name, decl) in plan.Providers)
+                {
+                    if (decl.IsSimulated)
+                    {
+                        IReadOnlyList<ScriptStep>? providerScript = null;
+                        if (scriptsByProvider?.TryGetValue(name, out var s) == true)
+                            providerScript = s;
+                        else if (flatScript is not null)
+                            providerScript = flatScript;
+                        providerReg.Register(name, new AdaptiveIntegrationProvider(providerScript));
+                    }
+                    else
+                    {
+                        var apiKey = Environment.GetEnvironmentVariable(decl.ApiKey!.EnvVarName) ?? "";
+                        providerReg.Register(name, new HttpModelProvider(decl, apiKey, new HttpClient()));
+                    }
                 }
 
                 var limits = ParseLimits(root);
@@ -280,9 +299,9 @@ internal static class IntegrationMode
                 // task's async context will read the correct execution_id.
                 RemoteToolImplementation.CurrentExecutionId.Value = execId;
 
-                var executor = new WorkflowExecutor(plan, toolReg, providerReg, bindings, limits);
+                var executor = new WorkflowExecutor(plan, toolReg, providerReg, limits);
                 var result   = await executor
-                    .RunAsync(ParseInputElement(inputClone, plan), provider, linked.Token, execId)
+                    .RunAsync(ParseInputElement(inputClone, plan), linked.Token, execId)
                     .ConfigureAwait(false);
 
                 // Emit all events (batch — streaming is a v1 limitation).

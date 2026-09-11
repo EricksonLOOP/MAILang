@@ -2,15 +2,7 @@ namespace Mail.Cli;
 
 public sealed class CliConfig
 {
-    public string Provider { get; set; } = "simulated";
-    public Dictionary<string, ModelBindingConfig> ModelBindings { get; set; } = new();
     public LimitsConfig Limits { get; set; } = new();
-}
-
-public sealed class ModelBindingConfig
-{
-    public string Provider { get; set; } = "";
-    public string ModelId { get; set; } = "";
 }
 
 public sealed class LimitsConfig

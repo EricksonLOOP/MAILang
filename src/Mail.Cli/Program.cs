@@ -14,7 +14,7 @@ if (args.Length >= 1 && args[0].ToLowerInvariant() == "integrate")
 
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("Usage: mail <validate|run|integrate> <file.mail> [--provider <name>] [--input <json>]");
+    Console.Error.WriteLine("Usage: mail <validate|run|integrate> <file.mail> [--input <json>]");
     return 2;
 }
 
@@ -28,17 +28,27 @@ if (!File.Exists(filePath))
 }
 
 // ── Parse CLI args ────────────────────────────────────────────────────────────
-string? providerOverride = null;
 string? inputJson = null;
 for (int i = 2; i < args.Length; i++)
 {
-    if (args[i] == "--provider" && i + 1 < args.Length) providerOverride = args[++i];
-    else if (args[i] == "--input" && i + 1 < args.Length) inputJson = args[++i];
+    if (args[i] == "--provider" && i + 1 < args.Length)
+    {
+        Console.Error.WriteLine("[MAIL-CONFIG-003] --provider flag is no longer supported. Declare providers in the .mail file.");
+        return 1;
+    }
+    if (args[i] == "--input" && i + 1 < args.Length) inputJson = args[++i];
 }
 
 // ── Load config ──────────────────────────────────────────────────────────────
-var config = LoadConfig();
-var providerName = providerOverride ?? config.Provider;
+CliConfig config;
+try { config = LoadConfig(); }
+catch (MailConfigurationException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    return 1;
+}
+
+var dotEnv = DotEnvLoader.Load();
 
 // ── Compile ───────────────────────────────────────────────────────────────────
 var absFilePath = Path.GetFullPath(filePath);
@@ -74,7 +84,6 @@ var input = ParseInput(inputJson, plan);
 // ── Build registries ──────────────────────────────────────────────────────────
 var toolRegistry     = ToolRegistryFactory.Build(plan, out var tokenTool);
 var providerRegistry = new ProviderRegistry();
-var modelBindings    = BuildModelBindings(config, providerName, plan);
 var limits = ExecutionLimits.Validated(
     config.Limits.MaxToolCallsPerAgent,
     config.Limits.MaxModelCallsPerAgent,
@@ -82,16 +91,16 @@ var limits = ExecutionLimits.Validated(
 
 using var providerHttpClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
 providerHttpClient.Timeout = Timeout.InfiniteTimeSpan;
-try { RegisterProviders(providerRegistry, providerName, plan, toolRegistry, input, providerHttpClient); }
-catch (ArgumentException ex)
+try { RegisterProviders(providerRegistry, plan, providerHttpClient, dotEnv); }
+catch (Exception ex) when (ex is ArgumentException or ProviderConfigurationException)
 {
     Console.Error.WriteLine($"[MAIL-CONFIG-001] {ex.Message}");
     return 1;
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
-var executor = new WorkflowExecutor(plan, toolRegistry, providerRegistry, modelBindings, limits);
-var result = await executor.RunAsync(input, providerName, CancellationToken.None);
+var executor = new WorkflowExecutor(plan, toolRegistry, providerRegistry, limits);
+var result = await executor.RunAsync(input, CancellationToken.None);
 
 foreach (var ev in result.Events)
 {
@@ -142,111 +151,26 @@ static CliConfig LoadConfig()
     const string configPath = "appsettings.json";
     if (!File.Exists(configPath)) return new CliConfig();
     var json = File.ReadAllText(configPath);
+
+    // Detect removed fields and reject at startup
+    using var doc = JsonDocument.Parse(json);
+    if (doc.RootElement.TryGetProperty("Provider", out _) ||
+        doc.RootElement.TryGetProperty("ModelBindings", out _))
+        throw new MailConfigurationException(
+            "[MAIL-CONFIG-004] appsettings.json 'Provider' and 'ModelBindings' are no longer supported. " +
+            "Declare providers in the .mail file instead.");
+
     return JsonSerializer.Deserialize<CliConfig>(json, new JsonSerializerOptions
     {
         PropertyNameCaseInsensitive = true,
     }) ?? new CliConfig();
 }
 
-static ModelBindings BuildModelBindings(CliConfig config, string providerName, ValidatedPlan plan)
+static void RegisterProviders(ProviderRegistry registry, ValidatedPlan plan,
+    HttpClient client, DotEnvLoader env)
 {
-    var bindings = new ModelBindings();
-    foreach (var logicalName in plan.Agents.Values.Select(a => a.LogicalModelName).Distinct())
-    {
-        if (providerName == "simulated") bindings.Register(logicalName, providerName, "simulated");
-        else if (config.ModelBindings.TryGetValue(logicalName, out var configured) && configured.Provider == providerName)
-            bindings.Register(logicalName, providerName, configured.ModelId);
-        else if (providerName == "deepseek")
-            bindings.Register(logicalName, providerName, Environment.GetEnvironmentVariable("DEEPSEEK_MODEL") ?? "deepseek-v4-flash");
-    }
-    return bindings;
-}
-
-static void RegisterProviders(ProviderRegistry registry, string providerName, ValidatedPlan plan,
-    ToolRegistry tools, MailValue input, HttpClient client)
-{
-    if (providerName == "simulated")
-    {
-        // When the plan includes GenerateToken, use an adaptive provider that propagates
-        // the actual generated token from the tool result into the final response.
-        IModelProvider provider = plan.Tools.ContainsKey("GenerateToken")
-            ? new CliTokenEchoSimulator()
-            : new SimulatedModelProvider(BuildSimulatedScript(plan, tools, input));
-
-        registry.Register(providerName, provider);
-    }
-    else if (providerName == "deepseek")
-        registry.Register(providerName, new DeepSeekModelProvider(client, Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY") ?? ""));
-    else
-        throw new ArgumentException($"Provider '{providerName}' is not registered. Use simulated or deepseek.");
-}
-static List<ModelResponse> BuildSimulatedScript(ValidatedPlan plan, ToolRegistry tools, MailValue input)
-{
-    // Find the first agent step and its first allowed tool to build a realistic script.
-    var script = new List<ModelResponse>();
-
-    foreach (var item in plan.Workflow.Items)
-    {
-        if (item is not Mail.Compiler.Ast.StepItem si) continue;
-        var step = si.Step;
-        if (step.Body is not Mail.Compiler.Ast.AgentBody ab) continue;
-        if (!plan.Agents.TryGetValue(ab.AgentName, out var agent)) continue;
-        if (agent.AllowedTools.Count == 0) continue;
-
-        var firstTool = agent.AllowedTools[0].ToolName;
-        if (!plan.Tools.TryGetValue(firstTool, out var toolDecl)) continue;
-
-        // Build args from input schema fields that match tool input fields
-        var args = ImmutableDictionary.CreateBuilder<string, JsonElement>(StringComparer.Ordinal);
-        if (input is MailSchema inputSchema)
-        {
-            foreach (var field in toolDecl.Input)
-            {
-                if (inputSchema.Fields.TryGetValue(field.Name, out var val))
-                {
-                    var json = SchemaConverter.ToJson(val);
-                    args[field.Name] = JsonDocument.Parse(json).RootElement.Clone();
-                }
-            }
-        }
-
-        // First response: call the first tool
-        script.Add(new ModelResponse(
-            ToolCalls: [new ToolCallRequest("sim-call-1", agent.AllowedTools[0].ToolName, args.ToImmutable())],
-            Text: null));
-
-        // Second response: return a JSON that satisfies the agent's output type
-        if (plan.Schemas.TryGetValue(
-            agent.OutputType is Mail.Compiler.Ast.NamedTypeRef nr ? nr.Name : "", out var outputSchema))
-        {
-            var outputFields = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var f in outputSchema.Fields)
-            {
-                outputFields[f.Name] = f.Type switch
-                {
-                    Mail.Compiler.Ast.PrimitiveTypeRef { Kind: Mail.Compiler.Ast.PrimitiveKind.String } =>
-                        input is MailSchema s && s.Fields.TryGetValue(f.Name, out var sv)
-                            ? ((MailString)sv).Value
-                            : "simulated-value",
-                    Mail.Compiler.Ast.PrimitiveTypeRef { Kind: Mail.Compiler.Ast.PrimitiveKind.Bool } => true,
-                    Mail.Compiler.Ast.PrimitiveTypeRef { Kind: Mail.Compiler.Ast.PrimitiveKind.Int }  => 0,
-                    _ => "simulated-value",
-                };
-            }
-            script.Add(new ModelResponse(null, JsonSerializer.Serialize(outputFields)));
-        }
-        else
-        {
-            script.Add(new ModelResponse(null, "{\"result\":\"simulated\"}"));
-        }
-
-        break; // Only handle the first agent step for the simulated script
-    }
-
-    if (script.Count == 0)
-        script.Add(new ModelResponse(null, "{\"result\":\"simulated\"}"));
-
-    return script;
+    if (plan.Providers.Count > 0)
+        ProviderRegistrar.RegisterDeclaredProviders(registry, plan, env, client);
 }
 
 static MailValue ParseInput(string? inputJson, ValidatedPlan plan)
@@ -270,43 +194,3 @@ static MailValue ParseInput(string? inputJson, ValidatedPlan plan)
 
 static string InputTypeName(ValidatedPlan plan) =>
     plan.Workflow.InputType is Mail.Compiler.Ast.NamedTypeRef nr ? nr.Name : "input";
-
-// ── CliTokenEchoSimulator ─────────────────────────────────────────────────────
-// Simulates the model for token-echo.mail: first call requests GenerateToken,
-// second call reads the actual token from the tool result and echoes it back.
-
-file sealed class CliTokenEchoSimulator : IModelProvider
-{
-    private int _callCount;
-
-    public Task<ModelResponse> CompleteAsync(ModelRequest request, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        _callCount++;
-
-        if (_callCount == 1)
-        {
-            return Task.FromResult(new ModelResponse(
-                ToolCalls:
-                [
-                    new ToolCallRequest(
-                        "cli-token-1",
-                        "GenerateToken",
-                        ImmutableDictionary<string, JsonElement>.Empty.Add(
-                            "prompt", JsonDocument.Parse("\"test\"").RootElement.Clone()))
-                ],
-                Text: null));
-        }
-
-        var toolResult = request.Messages
-            .OfType<ToolResultMessage>()
-            .First(m => m.ToolName == "GenerateToken");
-
-        using var doc = JsonDocument.Parse(toolResult.ResultJson);
-        var token = doc.RootElement.GetProperty("token").GetString()!;
-
-        return Task.FromResult(new ModelResponse(
-            ToolCalls: null,
-            Text: JsonSerializer.Serialize(new { token })));
-    }
-}

@@ -30,9 +30,8 @@ _FC_FIELDS = frozenset({"name", "kind", "required", "nullable", "enum_symbols",
 
 
 class MailRuntime:
-    def __init__(self, executable_path: str, *, provider: str = "simulated") -> None:
-        self._exe      = executable_path
-        self._provider = provider
+    def __init__(self, executable_path: str) -> None:
+        self._exe   = executable_path
         self._tools: dict[str, Callable] = {}
 
         self._proc: asyncio.subprocess.Process | None = None
@@ -146,7 +145,6 @@ class MailRuntime:
                 "execution_id": exec_id,
                 "path":         abs_path,
                 "input":        input,
-                "provider":     self._provider,
             }
             if provider_config is not None:
                 msg["provider_config"] = provider_config
