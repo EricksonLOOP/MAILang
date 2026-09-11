@@ -158,7 +158,7 @@ internal static class IntegrationMode
             }
 
             var contracts = plan.Tools.Values
-                .Select(t => new ToolContractDto(t.Name, DeclToDto(t.Input), DeclToDto(t.Output)))
+                .Select(t => new ToolContractDto(t.Name, DeclToDto(t.Input, plan), DeclToDto(t.Output, plan)))
                 .ToArray();
 
             writer.WriteMessage("loaded", new LoadedMsg(loadId, contracts));
@@ -240,8 +240,8 @@ internal static class IntegrationMode
                 {
                     toolReg.Register(toolName,
                         new RemoteToolImplementation(toolName, tracker, writer),
-                        ToolRegistryFactory.DeclToContracts(toolDecl.Input),
-                        ToolRegistryFactory.DeclToContracts(toolDecl.Output));
+                        FieldContractBuilder.FromDecls(toolDecl.Input,  plan),
+                        FieldContractBuilder.FromDecls(toolDecl.Output, plan));
                 }
 
                 var providerReg = new ProviderRegistry();
@@ -272,10 +272,7 @@ internal static class IntegrationMode
                         bindings.Register(logicalName, "simulated", "simulated");
                 }
 
-                var limits = ExecutionLimits.Validated(
-                    maxToolCalls:  20,
-                    maxModelCalls: 10,
-                    timeout: TimeSpan.FromMinutes(5));
+                var limits = ParseLimits(root);
 
                 writer.WriteMessage("run_started", new RunStartedMsg(execId));
 
@@ -354,36 +351,57 @@ internal static class IntegrationMode
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static FieldContractDto[] DeclToDto(
-        IReadOnlyList<Mail.Compiler.Ast.FieldDecl> fields) =>
-        ToolRegistryFactory.DeclToContracts(fields)
-            .Select(fc => new FieldContractDto(fc.Name, fc.Kind.ToString(), fc.Required))
+        IReadOnlyList<Mail.Compiler.Ast.FieldDecl> fields, ValidatedPlan plan) =>
+        FieldContractBuilder.FromDecls(fields, plan)
+            .Select(fc => new FieldContractDto(
+                fc.Name,
+                fc.Kind.ToString(),
+                fc.Required,
+                Nullable:          fc.Nullable ? true : null,
+                EnumSymbols:       fc.EnumSymbols?.ToArray(),
+                ElementKind:       fc.ElementKind?.ToString(),
+                ElementType:       fc.ElementTypeName,
+                ElementEnumSymbols: fc.ElementEnumSymbols?.ToArray()))
             .ToArray();
 
     private static MailValue ParseInputElement(JsonElement el, ValidatedPlan plan)
     {
         if (el.ValueKind != JsonValueKind.Object)
-            return new MailSchema("input", ImmutableDictionary<string, MailValue>.Empty);
+            return new MailSchema(InputTypeName(plan), ImmutableDictionary<string, MailValue>.Empty);
 
-        var typeName = plan.Workflow.InputType is Mail.Compiler.Ast.NamedTypeRef nr
-            ? nr.Name : "input";
-
-        var builder = ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
-        var seen    = new HashSet<string>(StringComparer.Ordinal);
-
+        // Reject duplicate keys
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var prop in el.EnumerateObject())
+            if (!seen.Add(prop.Name))
+                throw new InvalidOperationException($"Duplicate property '{prop.Name}' in input.");
+
+        return Mail.Runtime.DeclaredSchema.Parse(el, plan.Workflow.InputType, plan.Schemas, plan.Enums);
+    }
+
+    private static string InputTypeName(ValidatedPlan plan) =>
+        plan.Workflow.InputType is Mail.Compiler.Ast.NamedTypeRef nr ? nr.Name : "input";
+
+    private static ExecutionLimits ParseLimits(JsonElement root)
+    {
+        const int DefaultToolCalls  = 20;
+        const int DefaultModelCalls = 10;
+        const int DefaultTimeoutSec = 300; // 5 minutes
+
+        int maxToolCalls  = DefaultToolCalls;
+        int maxModelCalls = DefaultModelCalls;
+        int timeoutSec    = DefaultTimeoutSec;
+
+        if (root.TryGetProperty("limits", out var lim))
         {
-            if (!seen.Add(prop.Name)) continue;
-            builder[prop.Name] = prop.Value.ValueKind switch
-            {
-                JsonValueKind.String => new MailString(prop.Value.GetString()!),
-                JsonValueKind.True   => new MailBool(true),
-                JsonValueKind.False  => new MailBool(false),
-                JsonValueKind.Number => new MailInt(prop.Value.GetInt64()),
-                _                   => new MailString(prop.Value.GetRawText()),
-            };
+            if (lim.TryGetProperty("max_tool_calls_per_agent",  out var tc)  && tc.ValueKind == JsonValueKind.Number)
+                maxToolCalls  = Math.Clamp(tc.GetInt32(), 1, 1000);
+            if (lim.TryGetProperty("max_model_calls_per_agent", out var mc)  && mc.ValueKind == JsonValueKind.Number)
+                maxModelCalls = Math.Clamp(mc.GetInt32(), 1, 1000);
+            if (lim.TryGetProperty("timeout_seconds",           out var ts)  && ts.ValueKind == JsonValueKind.Number)
+                timeoutSec    = Math.Clamp(ts.GetInt32(), 1, 3600);
         }
 
-        return new MailSchema(typeName, builder.ToImmutable());
+        return ExecutionLimits.Validated(maxToolCalls, maxModelCalls, TimeSpan.FromSeconds(timeoutSec));
     }
 
     // Reads one line, enforcing a byte limit to prevent unbounded memory use.

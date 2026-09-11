@@ -20,8 +20,6 @@ public sealed class WorkflowExecutor(
         CancellationToken ct,
         string? executionId = null)
     {
-        ContractVerifier.Verify(plan, tools);
-
         var planId = plan.FilePath ?? plan.Workflow.Name;
         var ctx = executionId is not null
             ? new ExecutionContext(new RunId(executionId), limits, planId)
@@ -42,6 +40,10 @@ public sealed class WorkflowExecutor(
 
         try
         {
+            ContractVerifier.Verify(plan, tools);
+
+            MailValueValidator.Validate(input, plan.Workflow.InputType, plan);
+
             if (plan.Workflow.RequireInput is not null)
             {
                 if (!ExprEvaluator.EvalBool(plan.Workflow.RequireInput, state, plan.Workflow.Name))
@@ -408,7 +410,7 @@ public sealed class WorkflowExecutor(
         var resolvedArgs = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
         foreach (var (key, expr) in cb.Args)
             resolvedArgs[key] = state.Resolve(expr);
-        var inputSchema = BuildSchemaFromValues(resolvedArgs.ToImmutable(), tools.InputContract(cb.ToolName), cb.ToolName);
+        var inputSchema = ArgumentValidator.ValidateMailValues(resolvedArgs.ToImmutable(), tools.InputContract(cb.ToolName), cb.ToolName);
 
         if (tool.RequireInput is not null)
         {
@@ -447,6 +449,9 @@ public sealed class WorkflowExecutor(
             $"Tool '{cb.ToolName}' confirmed (effect: {EffectStatus.Confirmed}).",
             operationId: opId.Value, activationId: actId.Value, attemptId: attemptId.Value);
 
+        if (output is MailSchema outputSchema)
+            MailValueValidator.ValidateToolOutput(outputSchema, tool.Output, plan, cb.ToolName);
+
         if (tool.RequireOutput is not null)
         {
             var outputState = ExecutionState.WithInput(inputSchema).Publish("output", output);
@@ -476,6 +481,10 @@ public sealed class WorkflowExecutor(
         if (ab.InputExpr is not null)
             agentInput = state.Resolve(ab.InputExpr);
 
+        if (agentDecl.InputType is not null && agentInput is null)
+            throw new ContractViolationException(ab.AgentName,
+                "Agent declares typed input but none was provided.");
+
         if (agentDecl.RequireInput is not null && agentInput is not null)
         {
             var inputState = ExecutionState.WithInput(agentInput);
@@ -491,7 +500,8 @@ public sealed class WorkflowExecutor(
         var budget = new BudgetTracker(ctx.Limits);
         var runner = new AgentRunner(
             agentDecl, provider, binding.ModelId, _auth, tools, budget,
-            ctx.Logger, plan.Schemas, agentInput, actId, ctx.Budget);
+            ctx.Logger, plan.Schemas, agentInput, actId, ctx.Budget,
+            enums: plan.Enums, toolDecls: plan.Tools);
 
         var result = await runner.RunAsync(context, ct);
 
@@ -508,42 +518,8 @@ public sealed class WorkflowExecutor(
         return result;
     }
 
-    private static MailSchema BuildSchemaFromValues(
-        System.Collections.Immutable.ImmutableDictionary<string, MailValue> values,
-        FieldContract[] contract,
-        string toolName)
-    {
-        foreach (var fc in contract)
-            if (fc.Required && !values.ContainsKey(fc.Name))
-                throw new ArgumentValidationException(toolName, fc.Name, "Required argument missing.");
-
-        return new MailSchema(toolName + "Input", values);
-    }
-
-    private void ValidateOutput(MailValue output, TypeRef expectedType)
-    {
-        bool valid = expectedType switch
-        {
-            PrimitiveTypeRef p => p.Kind switch
-            {
-                PrimitiveKind.String => output is MailString,
-                PrimitiveKind.Bool => output is MailBool,
-                PrimitiveKind.Int => output is MailInt,
-                PrimitiveKind.Decimal => output is MailDecimal,
-                _ => false
-            },
-            NullableTypeRef n => output is MailNull || Valid(output, n.Inner),
-            ListTypeRef l => output is MailList list && list.Elements.All(x => Valid(x, l.ElementType)),
-            NamedTypeRef n when plan.Enums.TryGetValue(n.Name, out var e) =>
-                output is MailEnum value && e.Symbols.Contains(value.Symbol),
-            NamedTypeRef n when plan.Schemas.TryGetValue(n.Name, out var schema) =>
-                output is MailSchema value && schema.Fields.All(f => value.Fields.TryGetValue(f.Name, out var v)
-                    ? Valid(v, f.Type) : f.Optional),
-            _ => false
-        };
-        if (!valid) throw new InvalidOperationException($"Workflow value does not match declared type '{expectedType}'.");
-        bool Valid(MailValue value, TypeRef type) { ValidateOutput(value, type); return true; }
-    }
+    private void ValidateOutput(MailValue output, TypeRef expectedType) =>
+        MailValueValidator.Validate(output, expectedType, plan);
 }
 
 // Extension helper used in agent step

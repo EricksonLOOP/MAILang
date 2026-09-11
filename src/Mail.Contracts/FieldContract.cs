@@ -13,4 +13,5 @@ public sealed record FieldContract(
     string? EnumTypeName = null,
     ImmutableArray<string>? EnumSymbols = null,
     MailTypeKind? ElementKind = null,
-    string? ElementTypeName = null);
+    string? ElementTypeName = null,
+    ImmutableArray<string>? ElementEnumSymbols = null);

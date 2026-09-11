@@ -23,6 +23,11 @@ from .protocol import Diagnostic, FieldContract, ToolContract
 
 _PROTOCOL_VERSION = 1
 
+# Known FieldContract fields — used to filter server messages so new server fields
+# don't cause TypeError when passed to FieldContract(**f).
+_FC_FIELDS = frozenset({"name", "kind", "required", "nullable", "enum_symbols",
+                         "element_kind", "element_type", "element_enum_symbols"})
+
 
 class MailRuntime:
     def __init__(self, executable_path: str, *, provider: str = "simulated") -> None:
@@ -210,8 +215,8 @@ class MailRuntime:
                 contracts = [
                     ToolContract(
                         name=t["name"],
-                        input=[FieldContract(**f) for f in t.get("input", [])],
-                        output=[FieldContract(**f) for f in t.get("output", [])],
+                        input=[FieldContract(**{k: v for k, v in f.items() if k in _FC_FIELDS}) for f in t.get("input", [])],
+                        output=[FieldContract(**{k: v for k, v in f.items() if k in _FC_FIELDS}) for f in t.get("output", [])],
                     )
                     for t in msg.get("tools", [])
                 ]

@@ -460,13 +460,14 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
                         $"Agent '{ab.AgentName}' is not declared.", loc);
                     return new BindingInfo(ExprCategory.Schema, null);
                 }
-                if (ab.InputExpr is not null)
-                {
-                    if (agent.InputType is null)
-                        Error("MAIL-SEM", $"Agent '{ab.AgentName}' does not declare a typed 'input', but an input expression was provided.", loc);
-                    else
-                        InferType(ab.InputExpr, env, schemas, enums);
-                }
+                if (agent.InputType is not null && ab.InputExpr is null)
+                    Error("MAIL-SEM",
+                        $"Agent '{ab.AgentName}' declares typed 'input' but call omits 'with input:'.", loc);
+                if (agent.InputType is not null && ab.InputExpr is not null)
+                    CheckWorkflowInput(ab.InputExpr, agent.InputType, env, schemas, enums, loc);
+                if (agent.InputType is null && ab.InputExpr is not null)
+                    Error("MAIL-SEM",
+                        $"Agent '{ab.AgentName}' does not declare a typed 'input', but an input expression was provided.", loc);
                 foreach (var ctx in ab.ContextNames)
                     if (!env.TryGet(ctx, out _))
                         Error(DiagnosticCodes.BindingNotAvailable,
@@ -741,17 +742,16 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
     {
         foreach (var f in inputFields)
         {
-            if (f.Optional) continue; // optional fields may be absent in call args
+            if (f.Optional) continue;
             if (!args.TryGetValue(f.Name, out var expr))
             {
                 Error(DiagnosticCodes.ArgumentTypeMismatch,
                     $"Missing required argument '{f.Name}'.", loc);
                 continue;
             }
-            InferType(expr, env, schemas, enums);
+            CheckArgType(expr, f, env, schemas, enums, loc);
         }
 
-        // Validate provided optional args too
         foreach (var (key, expr) in args)
         {
             var field = inputFields.FirstOrDefault(f => f.Name == key);
@@ -759,7 +759,37 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
                 Error(DiagnosticCodes.ArgumentTypeMismatch,
                     $"Argument '{key}' is not a field of the tool input.", loc);
             else
-                InferType(expr, env, schemas, enums);
+                CheckArgType(expr, field, env, schemas, enums, loc);
+        }
+    }
+
+    private void CheckArgType(
+        Expr expr,
+        FieldDecl field,
+        TypeEnv env,
+        Dictionary<string, SchemaDecl> schemas,
+        Dictionary<string, EnumDecl> enums,
+        SourceLocation loc)
+    {
+        var argCat   = InferType(expr, env, schemas, enums);
+        var inner    = field.Type is NullableTypeRef nr ? nr.Inner : field.Type;
+        var fieldInfo = TypeRefToBindingInfoCore(inner, schemas, enums);
+        var fieldCat  = fieldInfo.Category;
+
+        if (argCat != fieldCat)
+        {
+            Error(DiagnosticCodes.ArgumentTypeMismatch,
+                $"Argument '{field.Name}': expected {fieldCat}, got {argCat}.", loc);
+            return;
+        }
+
+        if (argCat is ExprCategory.Schema or ExprCategory.Enum)
+        {
+            var argType  = ExpressionType(expr, env, schemas);
+            var fieldType = field.Type is NullableTypeRef ntr ? ntr.Inner : field.Type;
+            if (argType is not null && !SameType(argType, fieldType))
+                Error(DiagnosticCodes.ArgumentTypeMismatch,
+                    $"Argument '{field.Name}': type '{argType}' is not compatible with declared type '{fieldType}'.", loc);
         }
     }
 

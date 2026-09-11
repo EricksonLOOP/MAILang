@@ -17,7 +17,9 @@ internal sealed class AgentRunner(
     IReadOnlyDictionary<string, SchemaDecl>? schemas = null,
     MailValue? agentInput = null,
     ActivationId activationId = default,
-    GlobalBudget? globalBudget = null)
+    GlobalBudget? globalBudget = null,
+    IReadOnlyDictionary<string, EnumDecl>? enums = null,
+    IReadOnlyDictionary<string, ToolDecl>? toolDecls = null)
 {
     private readonly ArgumentValidator _argValidator = new();
 
@@ -102,6 +104,15 @@ internal sealed class AgentRunner(
                         tools.InputContract(toolCall.ToolName),
                         toolCall.ToolName);
 
+                    if (toolDecls is not null && toolDecls.TryGetValue(toolCall.ToolName, out var inputToolDecl)
+                        && inputToolDecl.RequireInput is not null)
+                    {
+                        var inputState = ExecutionState.WithInput(input);
+                        if (!ExprEvaluator.EvalBool(inputToolDecl.RequireInput, inputState, toolCall.ToolName))
+                            throw new ContractViolationException(toolCall.ToolName,
+                                "Input contract (require input) was not satisfied.");
+                    }
+
                     logger.Log(EventLogger.Kinds.DispatchIntent,
                         $"Dispatching tool '{toolCall.ToolName}'.",
                         operationId: opId.Value, callId: toolCall.CallId,
@@ -142,7 +153,30 @@ internal sealed class AgentRunner(
                         activationId: activationId.Value, attemptId: toolAttemptId.Value,
                         durationMs: sw.ElapsedMilliseconds);
 
-                    ValidateOutput(output, tools.OutputContract(toolCall.ToolName), toolCall.ToolName);
+                    if (toolDecls is not null && toolDecls.TryGetValue(toolCall.ToolName, out var toolDecl))
+                    {
+                        MailValueValidator.ValidateToolOutput(
+                            output, toolDecl.Output,
+                            schemas ?? new Dictionary<string, SchemaDecl>(),
+                            enums   ?? new Dictionary<string, EnumDecl>(),
+                            toolCall.ToolName);
+
+                        if (toolDecl.RequireOutput is not null)
+                        {
+                            var outputState = ExecutionState.WithInput(input).Publish("output", output);
+                            if (!ExprEvaluator.EvalBool(toolDecl.RequireOutput, outputState, toolCall.ToolName))
+                                throw new ContractViolationException(toolCall.ToolName,
+                                    "Output contract (require output) was not satisfied.");
+                        }
+                    }
+                    else
+                    {
+                        var outputContract = tools.OutputContract(toolCall.ToolName);
+                        foreach (var fc in outputContract)
+                            if (fc.Required && !output.Fields.ContainsKey(fc.Name))
+                                throw new ArgumentValidationException(toolCall.ToolName, fc.Name,
+                                    "Required output field is missing.");
+                    }
 
                     var resultJson = SchemaConverter.ToJson(output);
                     messages.Add(new ToolResultMessage(toolCall.CallId, toolCall.ToolName, resultJson));
@@ -172,22 +206,12 @@ internal sealed class AgentRunner(
                 throw new DuplicateCallIdException(call.CallId);
     }
 
-    private static void ValidateOutput(MailSchema output, FieldContract[] contract, string toolName)
-    {
-        foreach (var fc in contract)
-        {
-            if (!output.Fields.ContainsKey(fc.Name) && fc.Required)
-                throw new ArgumentValidationException(toolName, fc.Name,
-                    "Required output field is missing.");
-        }
-    }
-
     private MailValue ParseFinalResponse(string text)
     {
         if (schemas is not null)
         {
             using var parsed = JsonDocument.Parse(text);
-            return DeclaredSchema.Parse(parsed.RootElement, agent.OutputType, schemas);
+            return DeclaredSchema.Parse(parsed.RootElement, agent.OutputType, schemas, enums);
         }
         if (agent.OutputType is not Ast.NamedTypeRef namedType)
             return new MailString(text.Trim());
@@ -279,7 +303,7 @@ internal sealed class AgentRunner(
 
     private string BuildOutputSchema()
     {
-        if (schemas is not null) return DeclaredSchema.ToJson(agent.OutputType, schemas);
+        if (schemas is not null) return DeclaredSchema.ToJson(agent.OutputType, schemas, enums);
         if (agent.OutputType is Ast.NamedTypeRef named)
             return $"{{\"type\":\"object\",\"description\":\"Schema {named.Name}\"}}";
         return "{\"type\":\"string\"}";

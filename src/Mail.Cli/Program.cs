@@ -252,35 +252,24 @@ static List<ModelResponse> BuildSimulatedScript(ValidatedPlan plan, ToolRegistry
 static MailValue ParseInput(string? inputJson, ValidatedPlan plan)
 {
     if (inputJson is null)
-        return new MailSchema("input", ImmutableDictionary<string, MailValue>.Empty);
+        return new MailSchema(InputTypeName(plan), ImmutableDictionary<string, MailValue>.Empty);
 
     using var doc = JsonDocument.Parse(inputJson);
     if (doc.RootElement.ValueKind != JsonValueKind.Object)
         throw new InvalidOperationException("--input must be a JSON object.");
 
-    // Check for duplicate properties
+    // Reject duplicate keys before parsing
     var seen = new HashSet<string>(StringComparer.Ordinal);
     foreach (var prop in doc.RootElement.EnumerateObject())
         if (!seen.Add(prop.Name))
             throw new InvalidOperationException($"Duplicate property '{prop.Name}' in --input JSON.");
 
-    var builder = ImmutableDictionary.CreateBuilder<string, MailValue>(StringComparer.Ordinal);
-    foreach (var prop in doc.RootElement.EnumerateObject())
-    {
-        MailValue val = prop.Value.ValueKind switch
-        {
-            JsonValueKind.String => new MailString(prop.Value.GetString()!),
-            JsonValueKind.True   => new MailBool(true),
-            JsonValueKind.False  => new MailBool(false),
-            JsonValueKind.Number => new MailInt(prop.Value.GetInt64()),
-            _ => new MailString(prop.Value.GetRawText()),
-        };
-        builder[prop.Name] = val;
-    }
-
-    var inputTypeName = plan.Workflow.InputType is Mail.Compiler.Ast.NamedTypeRef nr ? nr.Name : "input";
-    return new MailSchema(inputTypeName, builder.ToImmutable());
+    return Mail.Runtime.DeclaredSchema.Parse(
+        doc.RootElement, plan.Workflow.InputType, plan.Schemas, plan.Enums);
 }
+
+static string InputTypeName(ValidatedPlan plan) =>
+    plan.Workflow.InputType is Mail.Compiler.Ast.NamedTypeRef nr ? nr.Name : "input";
 
 // ── CliTokenEchoSimulator ─────────────────────────────────────────────────────
 // Simulates the model for token-echo.mail: first call requests GenerateToken,

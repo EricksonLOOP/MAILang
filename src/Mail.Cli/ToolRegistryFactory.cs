@@ -15,8 +15,8 @@ public static class ToolRegistryFactory
 
         foreach (var (toolName, toolDecl) in plan.Tools)
         {
-            var inputContract  = DeclToContracts(toolDecl.Input);
-            var outputContract = DeclToContracts(toolDecl.Output);
+            var inputContract  = FieldContractBuilder.FromDecls(toolDecl.Input,  plan);
+            var outputContract = FieldContractBuilder.FromDecls(toolDecl.Output, plan);
 
             IToolImplementation impl;
             if (toolName == "GenerateToken")
@@ -36,17 +36,6 @@ public static class ToolRegistryFactory
         return registry;
     }
 
-    public static FieldContract[] DeclToContracts(IReadOnlyList<Mail.Compiler.Ast.FieldDecl> fields) =>
-        fields.Select(f => new FieldContract(
-            f.Name,
-            f.Type is Mail.Compiler.Ast.PrimitiveTypeRef pt ? pt.Kind switch
-            {
-                Mail.Compiler.Ast.PrimitiveKind.String => MailTypeKind.String,
-                Mail.Compiler.Ast.PrimitiveKind.Bool   => MailTypeKind.Bool,
-                Mail.Compiler.Ast.PrimitiveKind.Int    => MailTypeKind.Int,
-                _ => MailTypeKind.String,
-            } : MailTypeKind.Schema,
-            Required: true)).ToArray();
 }
 
 // Stub that echoes matching input fields and fills defaults for others
@@ -64,10 +53,17 @@ file sealed class EchoTool(string toolName, FieldContract[] outputContract) : IT
             else
                 builder[fc.Name] = fc.Kind switch
                 {
-                    MailTypeKind.String => new MailString("simulated-value"),
-                    MailTypeKind.Bool   => new MailBool(true),
-                    MailTypeKind.Int    => new MailInt(0),
-                    _                  => new MailString("unknown"),
+                    MailTypeKind.String  => new MailString("simulated-value"),
+                    MailTypeKind.Bool    => new MailBool(true),
+                    MailTypeKind.Int     => new MailInt(0),
+                    MailTypeKind.Decimal => new MailDecimal(0m),
+                    MailTypeKind.List    => new MailList(System.Collections.Immutable.ImmutableList<MailValue>.Empty),
+                    MailTypeKind.Enum    => fc.EnumSymbols is { Length: > 0 }
+                        ? new MailEnum(fc.EnumTypeName ?? fc.Name, fc.EnumSymbols.Value[0])
+                        : new MailString("unknown-enum"),
+                    MailTypeKind.Schema  => new MailSchema(fc.SchemaTypeName ?? fc.Name,
+                        System.Collections.Immutable.ImmutableDictionary<string, MailValue>.Empty),
+                    _                    => new MailString("unknown"),
                 };
         }
 

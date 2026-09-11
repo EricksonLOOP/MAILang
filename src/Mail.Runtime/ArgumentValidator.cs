@@ -151,7 +151,8 @@ public sealed class ArgumentValidator
 
         var elementKind = fc.ElementKind.Value;
         var elementContract = new FieldContract("element", elementKind, Required: true,
-            SchemaTypeName: fc.ElementTypeName, EnumTypeName: fc.ElementTypeName);
+            SchemaTypeName: fc.ElementTypeName, EnumTypeName: fc.ElementTypeName,
+            EnumSymbols: fc.ElementEnumSymbols);
 
         var builder = ImmutableList.CreateBuilder<MailValue>();
         var i = 0;
@@ -164,6 +165,60 @@ public sealed class ArgumentValidator
             i++;
         }
         return new MailList(builder.ToImmutable());
+    }
+
+    public static MailSchema ValidateMailValues(
+        System.Collections.Immutable.ImmutableDictionary<string, MailValue> values,
+        FieldContract[] contract,
+        string contextName)
+    {
+        var fields = System.Collections.Immutable.ImmutableDictionary
+            .CreateBuilder<string, MailValue>(StringComparer.Ordinal);
+
+        foreach (var fc in contract)
+        {
+            if (!values.TryGetValue(fc.Name, out var value))
+            {
+                if (fc.Required)
+                    throw new ArgumentValidationException(contextName, fc.Name, "Required field is missing.");
+                continue;
+            }
+
+            if (value is MailNull)
+            {
+                if (!fc.Nullable)
+                    throw new ArgumentValidationException(contextName, fc.Name,
+                        "Field is not nullable; explicit null is not allowed.");
+                fields[fc.Name] = value;
+                continue;
+            }
+
+            bool kindOk = fc.Kind switch
+            {
+                MailTypeKind.String  => value is MailString,
+                MailTypeKind.Bool    => value is MailBool,
+                MailTypeKind.Int     => value is MailInt,
+                MailTypeKind.Decimal => value is MailDecimal,
+                MailTypeKind.List    => value is MailList,
+                MailTypeKind.Enum    => value is MailEnum me &&
+                    (fc.EnumSymbols is null ||
+                     fc.EnumSymbols.Value.Contains(me.Symbol, StringComparer.Ordinal)),
+                MailTypeKind.Schema  => value is MailSchema,
+                _ => false,
+            };
+
+            if (!kindOk)
+                throw new ArgumentValidationException(contextName, fc.Name,
+                    $"Field kind mismatch: expected {fc.Kind}, got {value.GetType().Name}.");
+
+            fields[fc.Name] = value;
+        }
+
+        foreach (var key in values.Keys)
+            if (!contract.Any(f => f.Name == key))
+                throw new ArgumentValidationException(contextName, key, "Unknown field.");
+
+        return new MailSchema(contextName + "Input", fields.ToImmutable());
     }
 
     private static MailEnum ConvertEnum(JsonElement element, FieldContract fc, string contextName)

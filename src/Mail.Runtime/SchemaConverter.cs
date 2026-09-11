@@ -15,7 +15,7 @@ public static class SchemaConverter
     {
         if (value is MailNull) return "null";
         var node = ToJsonNode(value);
-        return node.ToJsonString();
+        return node?.ToJsonString() ?? "null";
     }
 
     public static MailSchema FromJson(string json, string typeName, FieldContract[] contract)
@@ -42,13 +42,14 @@ public static class SchemaConverter
         return new MailSchema(typeName, validated.Fields);
     }
 
-    internal static JsonNode ToJsonNode(MailValue value) => value switch
+    internal static JsonNode? ToJsonNode(MailValue value) => value switch
     {
+        MailNull      => null,
         MailString s  => JsonValue.Create(s.Value)!,
         MailBool b    => JsonValue.Create(b.Value)!,
         MailInt i     => JsonValue.Create(i.Value)!,
         MailDecimal d => JsonValue.Create(FormatDecimal(d.Value))!,
-        MailList l    => new JsonArray(l.Elements.Select(e => ToJsonNode(e)).ToArray()),
+        MailList l    => new JsonArray(l.Elements.Select(e => (JsonNode?)ToJsonNode(e)).ToArray()),
         MailEnum e    => JsonValue.Create(e.Symbol)!,
         MailSchema sc => SchemaToObject(sc),
         _ => throw new InvalidOperationException($"Cannot convert {value.GetType().Name} to JSON."),
@@ -63,7 +64,7 @@ public static class SchemaConverter
     {
         var obj = new JsonObject();
         foreach (var (key, val) in schema.Fields)
-            obj[key] = ToJsonNode(val);
+            obj[key] = val is MailNull ? null : ToJsonNode(val);
         return obj;
     }
 }

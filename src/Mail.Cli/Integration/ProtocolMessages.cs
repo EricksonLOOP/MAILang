@@ -40,9 +40,14 @@ record HandshakeErrorMsg(
     [property: JsonPropertyName("reason")] string Reason);
 
 record FieldContractDto(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonPropertyName("required")] bool Required);
+    [property: JsonPropertyName("name")]             string    Name,
+    [property: JsonPropertyName("kind")]             string    Kind,
+    [property: JsonPropertyName("required")]         bool      Required,
+    [property: JsonPropertyName("nullable")]         bool?     Nullable         = null,
+    [property: JsonPropertyName("enum_symbols")]     string[]? EnumSymbols      = null,
+    [property: JsonPropertyName("element_kind")]     string?   ElementKind      = null,
+    [property: JsonPropertyName("element_type")]     string?   ElementType      = null,
+    [property: JsonPropertyName("element_enum_symbols")] string[]? ElementEnumSymbols = null);
 
 record ToolContractDto(
     [property: JsonPropertyName("name")] string Name,

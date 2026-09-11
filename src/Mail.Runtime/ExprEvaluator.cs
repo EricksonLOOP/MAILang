@@ -87,9 +87,12 @@ internal static class ExprEvaluator
 
     private static bool ValuesEqual(MailValue a, MailValue b) => (a, b) switch
     {
-        (MailString sa, MailString sb) => sa.Value == sb.Value,
-        (MailBool   ba, MailBool   bb) => ba.Value == bb.Value,
-        (MailInt    ia, MailInt    ib) => ia.Value  == ib.Value,
+        (MailString  sa, MailString  sb) => sa.Value  == sb.Value,
+        (MailBool    ba, MailBool    bb) => ba.Value  == bb.Value,
+        (MailInt     ia, MailInt     ib) => ia.Value  == ib.Value,
+        (MailDecimal da, MailDecimal db) => da.Value  == db.Value,
+        (MailEnum    ea, MailEnum    eb) => ea.TypeName == eb.TypeName && ea.Symbol == eb.Symbol,
+        (MailNull,       MailNull      ) => true,
         _ => false,
     };
 

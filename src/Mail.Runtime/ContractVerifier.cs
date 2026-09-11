@@ -100,6 +100,24 @@ public static class ContractVerifier
             if (fd.Optional != !reg.Required)
                 throw new ToolContractMismatchException(toolName,
                     $"{direction} field '{fd.Name}': MAIL declares Optional={fd.Optional} but registered contract has Required={reg.Required}.");
+
+            // Check EnumSymbols consistency
+            if (expectedKind == MailTypeKind.Enum)
+            {
+                var declaredName = fd.Type is NullableTypeRef ntr
+                    ? (ntr.Inner is NamedTypeRef nr2 ? nr2.Name : "")
+                    : (fd.Type is NamedTypeRef nr ? nr.Name : "");
+                IReadOnlyList<string> declaredSymbols = plan.Enums.TryGetValue(declaredName, out var ed)
+                    ? (IReadOnlyList<string>)ed.Symbols
+                    : System.Array.Empty<string>();
+                var registeredSymbols = reg.EnumSymbols?.ToArray() ?? System.Array.Empty<string>();
+                if (!declaredSymbols.OrderBy(s => s, StringComparer.Ordinal)
+                        .SequenceEqual(registeredSymbols.OrderBy(s => s, StringComparer.Ordinal), StringComparer.Ordinal))
+                    throw new ToolContractMismatchException(toolName,
+                        $"{direction} field '{fd.Name}' enum symbols mismatch: " +
+                        $"declared [{string.Join(", ", declaredSymbols.OrderBy(s => s, StringComparer.Ordinal))}] " +
+                        $"vs registered [{string.Join(", ", registeredSymbols.OrderBy(s => s, StringComparer.Ordinal))}].");
+            }
         }
     }
 

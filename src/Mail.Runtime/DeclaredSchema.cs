@@ -5,7 +5,7 @@ using Mail.Contracts;
 
 namespace Mail.Runtime;
 
-internal static class DeclaredSchema
+public static class DeclaredSchema
 {
     public static string ToJson(
         TypeRef type,
