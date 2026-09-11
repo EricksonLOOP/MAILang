@@ -41,12 +41,6 @@ public sealed class ProviderNotFoundException(string providerName)
     public string ProviderName { get; } = providerName;
 }
 
-public sealed class ModelBindingNotFoundException(string logicalName, string providerName)
-    : Exception($"No model binding found for logical name '{logicalName}' with provider '{providerName}'.")
-{
-    public string LogicalName { get; } = logicalName;
-    public string ProviderName { get; } = providerName;
-}
 
 public sealed class DuplicateCallIdException(string callId)
     : Exception($"Provider returned duplicate call ID '{callId}'.");
@@ -81,4 +75,25 @@ public sealed class ApprovalExpiredException(string operationId)
     : Exception($"Approval expired for operation '{operationId}'.")
 {
     public string OperationId { get; } = operationId;
+}
+
+public sealed class ProviderHttpException(string providerName, int statusCode, string excerpt)
+    : Exception(statusCode > 0
+        ? $"Provider '{providerName}' returned HTTP {statusCode}: {excerpt}"
+        : $"Provider '{providerName}' network error: {excerpt}")
+{
+    public string ProviderName { get; } = providerName;
+    public int StatusCode { get; } = statusCode;
+}
+
+public sealed class ProviderResponseException(string providerName, string reason, string? excerpt = null)
+    : Exception($"Provider '{providerName}' response error: {reason}" + (excerpt != null ? $" — {excerpt}" : ""))
+{
+    public string ProviderName { get; } = providerName;
+}
+
+public sealed class ProviderConfigurationException(string providerName, string reason)
+    : Exception($"Provider '{providerName}' configuration error: {reason}")
+{
+    public string ProviderName { get; } = providerName;
 }
