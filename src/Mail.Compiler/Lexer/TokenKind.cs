@@ -51,6 +51,20 @@ public enum TokenKind
     Enum,
     Optional,
 
+    // Provider declaration keywords
+    Provider,
+    Env,
+    Response,
+    Method,
+    Headers,
+    Body,
+    FinishReason,
+
+    // Provider operators
+    Arrow,     // ->
+    Dollar,    // $
+    Plus,      // +
+
     // String literals
     StringLiteral,
     TripleStringLiteral,

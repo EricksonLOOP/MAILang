@@ -69,8 +69,10 @@ public class ParserTests
         schema Req { q: String }
         schema Resp { a: String }
         tool T { input { q: String } output { a: String } }
+        provider Sim { type simulated }
         agent A {
-          model GPT
+          provider Sim
+          model "gpt-4"
           {SYSTEM}
           output Resp
           tools { allow T }

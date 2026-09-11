@@ -46,11 +46,12 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         var tok = Current();
         return tok.Kind switch
         {
-            TokenKind.Schema   => ParseSchema(),
-            TokenKind.Tool     => ParseTool(),
-            TokenKind.Agent    => ParseAgent(),
-            TokenKind.Workflow => ParseWorkflow(),
-            TokenKind.Enum     => ParseEnum(),
+            TokenKind.Schema    => ParseSchema(),
+            TokenKind.Tool      => ParseTool(),
+            TokenKind.Agent     => ParseAgent(),
+            TokenKind.Workflow  => ParseWorkflow(),
+            TokenKind.Enum      => ParseEnum(),
+            TokenKind.Provider  => ParseProvider(),
             _ => UnexpectedDeclaration(tok),
         };
     }
@@ -119,9 +120,43 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         var name = ExpectIdentifier();
         if (name is null) return null;
         Expect(TokenKind.LBrace);
-        Expect(TokenKind.Model);
-        var modelName = ExpectIdentifier();
-        if (modelName is null) return null;
+
+        string providerRef = "";
+        string modelId = "";
+
+        if (IsKind(TokenKind.Provider))
+        {
+            // New syntax: provider ProviderRef model "model-id"
+            Advance();
+            var pRef = ExpectIdentifier() ?? "?";
+            if (IsKind(TokenKind.Dot))
+            {
+                Advance();
+                pRef += "." + (ExpectIdentifier() ?? "?");
+            }
+            providerRef = pRef;
+
+            Expect(TokenKind.Model);
+            if (!IsKind(TokenKind.StringLiteral))
+            {
+                Error("Expected string literal for model ID after 'model'.", Current().Location);
+            }
+            else
+            {
+                modelId = Current().Text;
+                Advance();
+            }
+        }
+        else if (IsKind(TokenKind.Model))
+        {
+            // Old syntax (provider ref = "" signals migration needed — validated by SemanticValidator P11)
+            Advance();
+            modelId = ExpectIdentifier() ?? "?";
+        }
+        else
+        {
+            Error("Expected 'provider' or 'model' in agent declaration.", Current().Location);
+        }
 
         SystemPromptNode? systemPrompt = null;
         var seenSystem = false;
@@ -165,19 +200,348 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         {
             Advance();
             inputType = ParseTypeRef();
-            requireInput = TryParseRequireBlock(isInput: true);  // immediately after input TypeRef
+            requireInput = TryParseRequireBlock(isInput: true);
         }
 
         Expect(TokenKind.Output);
         var outputType = ParseTypeRef();
-        var requireOutput = TryParseRequireBlock(isInput: false);  // immediately after output TypeRef
+        var requireOutput = TryParseRequireBlock(isInput: false);
         Expect(TokenKind.Tools);
         Expect(TokenKind.LBrace);
         var allowed = ParseAllowList();
         Expect(TokenKind.RBrace);
         Expect(TokenKind.RBrace);
-        return new AgentDecl(name, modelName, inputType, outputType, allowed, loc,
+        return new AgentDecl(name, providerRef, modelId, inputType, outputType, allowed, loc,
             systemPrompt, requireInput, requireOutput);
+    }
+
+    // ── Provider declarations ─────────────────────────────────────────────────
+
+    private ProviderDecl? ParseProvider()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Provider);
+        var name = ExpectIdentifier();
+        if (name is null) return null;
+        Expect(TokenKind.LBrace);
+
+        // Simulated provider: type simulated
+        if (IsKindIdentifier("type"))
+        {
+            Advance();
+            if (IsKindIdentifier("simulated"))
+            {
+                Advance();
+                Expect(TokenKind.RBrace);
+                return new ProviderDecl(name, IsSimulated: true, null, null, null, null, loc);
+            }
+            Error("Unknown provider type. Expected 'simulated' for simulated providers.", Current().Location);
+            SkipToNextRBrace();
+            if (IsKind(TokenKind.RBrace)) Advance();
+            return null;
+        }
+
+        // HTTP provider
+        string? baseUrl = null;
+        EnvExpr? apiKey = null;
+        ProviderCallDecl? call = null;
+        ProviderResponseDecl? response = null;
+
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            if (IsKindIdentifier("base_url"))
+            {
+                Advance();
+                baseUrl = ExpectStringLiteralValue();
+            }
+            else if (IsKindIdentifier("api_key"))
+            {
+                Advance();
+                apiKey = ParseEnvExpr();
+            }
+            else if (IsKind(TokenKind.Call))
+            {
+                Advance();
+                call = ParseCallBlock();
+            }
+            else if (IsKind(TokenKind.Response))
+            {
+                var rLoc = Current().Location;
+                Advance();
+                response = ParseResponseBlock(rLoc);
+            }
+            else
+            {
+                Error($"Unknown provider property '{Current().Text}'.", Current().Location);
+                Advance();
+            }
+        }
+        Expect(TokenKind.RBrace);
+        return new ProviderDecl(name, IsSimulated: false, baseUrl, apiKey, call, response, loc);
+    }
+
+    private EnvExpr? ParseEnvExpr()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.Env);
+        Expect(TokenKind.LParen);
+        if (!IsKind(TokenKind.StringLiteral))
+        {
+            Error("Expected string literal (env var name) inside env(...).", Current().Location);
+            return null;
+        }
+        var varName = Current().Text;
+        Advance();
+        Expect(TokenKind.RParen);
+        return new EnvExpr(varName, loc);
+    }
+
+    private ProviderCallDecl? ParseCallBlock()
+    {
+        var loc = Current().Location;
+        Expect(TokenKind.LBrace);
+
+        string method = "POST";
+        string path = "/";
+        var headers = new List<HeaderDecl>();
+        var body = new List<BodyFieldDecl>();
+
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            if (IsKind(TokenKind.Method))
+            {
+                Advance();
+                method = ExpectIdentifier() ?? "POST";
+            }
+            else if (IsKindIdentifier("path"))
+            {
+                Advance();
+                path = ExpectStringLiteralValue() ?? "/";
+            }
+            else if (IsKind(TokenKind.Headers))
+            {
+                Advance();
+                Expect(TokenKind.LBrace);
+                while (!IsKind(TokenKind.RBrace) && !IsEof())
+                {
+                    if (!IsKind(TokenKind.StringLiteral))
+                    {
+                        Error("Expected string header name.", Current().Location);
+                        Advance();
+                        continue;
+                    }
+                    var headerName = Current().Text;
+                    Advance();
+                    var headerValue = ParseHeaderValue();
+                    headers.Add(new HeaderDecl(headerName, headerValue));
+                }
+                Expect(TokenKind.RBrace);
+            }
+            else if (IsKind(TokenKind.Body))
+            {
+                Advance();
+                Expect(TokenKind.LBrace);
+                body = ParseBodyFields();
+                Expect(TokenKind.RBrace);
+            }
+            else
+            {
+                Error($"Unknown call block property '{Current().Text}'.", Current().Location);
+                Advance();
+            }
+        }
+        Expect(TokenKind.RBrace);
+        return new ProviderCallDecl(method, path, headers, body, loc);
+    }
+
+    private HeaderValue ParseHeaderValue()
+    {
+        var parts = new List<HeaderValue>();
+        parts.Add(ParseSingleHeaderPart());
+        while (IsKind(TokenKind.Plus))
+        {
+            Advance();
+            parts.Add(ParseSingleHeaderPart());
+        }
+        return parts.Count == 1 ? parts[0] : new ConcatHeaderValue(parts);
+    }
+
+    private HeaderValue ParseSingleHeaderPart()
+    {
+        if (IsKind(TokenKind.StringLiteral))
+        {
+            var text = Current().Text;
+            Advance();
+            return new LiteralHeaderValue(text);
+        }
+        var name = ExpectIdentifier() ?? "?";
+        return new FieldHeaderValue(name);
+    }
+
+    private List<BodyFieldDecl> ParseBodyFields()
+    {
+        var fields = new List<BodyFieldDecl>();
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            if (!IsKind(TokenKind.StringLiteral))
+            {
+                Error("Expected string key in body field.", Current().Location);
+                Advance();
+                continue;
+            }
+            var key = Current().Text;
+            Advance();
+            var value = ParseBodyValue();
+            fields.Add(new BodyFieldDecl(key, value));
+        }
+        return fields;
+    }
+
+    private BodyValue ParseBodyValue()
+    {
+        var tok = Current();
+
+        // Nested object: { key value ... }
+        if (tok.Kind == TokenKind.LBrace)
+        {
+            Advance();
+            var fields = ParseBodyFields();
+            Expect(TokenKind.RBrace);
+            return new ObjectBodyValue(fields);
+        }
+
+        // Interpolation: $varName or $messages/tools/calls { ... }
+        if (tok.Kind == TokenKind.Dollar)
+        {
+            Advance();
+            var varName = ExpectIdentifier() ?? "?";
+            if (varName == "messages" && IsKind(TokenKind.LBrace))
+            {
+                Advance();
+                var mappings = ParseMessageMappings();
+                Expect(TokenKind.RBrace);
+                return new MessagesBodyValue(mappings);
+            }
+            if (varName == "tools" && IsKind(TokenKind.LBrace))
+            {
+                Advance();
+                var template = ParseBodyFields();
+                Expect(TokenKind.RBrace);
+                return new ToolsBodyValue(template);
+            }
+            if (varName == "calls" && IsKind(TokenKind.LBrace))
+            {
+                Advance();
+                var template = ParseBodyFields();
+                Expect(TokenKind.RBrace);
+                return new CallsBodyValue(template);
+            }
+            return new InterpolationBodyValue(varName);
+        }
+
+        // String literal
+        if (tok.Kind == TokenKind.StringLiteral)
+        {
+            Advance();
+            return new StringBodyValue(tok.Text);
+        }
+
+        // Integer literal
+        if (tok.Kind == TokenKind.IntLiteral)
+        {
+            Advance();
+            if (long.TryParse(tok.Text, out var n))
+                return new IntBodyValue(n);
+            Error("Integer literal out of range.", tok.Location);
+            return new IntBodyValue(0);
+        }
+
+        // Boolean
+        if (tok.Kind == TokenKind.True)  { Advance(); return new BoolBodyValue(true); }
+        if (tok.Kind == TokenKind.False) { Advance(); return new BoolBodyValue(false); }
+
+        Error($"Expected body value, got '{tok.Text}'.", tok.Location);
+        Advance();
+        return new StringBodyValue("");
+    }
+
+    private List<MessageMappingDecl> ParseMessageMappings()
+    {
+        var mappings = new List<MessageMappingDecl>();
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            var typeName = ExpectIdentifier() ?? "?";
+            Expect(TokenKind.Arrow);
+            Expect(TokenKind.LBrace);
+            var fields = ParseBodyFields();
+            Expect(TokenKind.RBrace);
+            mappings.Add(new MessageMappingDecl(typeName, fields));
+        }
+        return mappings;
+    }
+
+    private ProviderResponseDecl ParseResponseBlock(SourceLocation loc)
+    {
+        Expect(TokenKind.LBrace);
+        FinishReasonDecl? finishReason = null;
+        string? textSelector = null;
+        ProviderToolCallsDecl? toolCalls = null;
+
+        while (!IsKind(TokenKind.RBrace) && !IsEof())
+        {
+            if (IsKind(TokenKind.FinishReason))
+            {
+                Advance();
+                Expect(TokenKind.LBrace);
+                string? selector = null, stopVal = null, tcVal = null;
+                while (!IsKind(TokenKind.RBrace) && !IsEof())
+                {
+                    var key = ExpectIdentifier() ?? "?";
+                    var val = IsKind(TokenKind.StringLiteral) ? Current().Text : null;
+                    if (IsKind(TokenKind.StringLiteral)) Advance();
+                    if (key == "path")        selector = val;
+                    else if (key == "stop")        stopVal  = val;
+                    else if (key == "tool_calls")  tcVal    = val;
+                    else Error($"Unknown finish_reason key '{key}'. Expected path, stop, or tool_calls.", Current().Location);
+                }
+                Expect(TokenKind.RBrace);
+                finishReason = new FinishReasonDecl(selector ?? "", stopVal ?? "", tcVal ?? "");
+            }
+            else
+            {
+                var key = ExpectIdentifier() ?? "?";
+                if (key == "text")
+                {
+                    textSelector = IsKind(TokenKind.StringLiteral) ? Current().Text : null;
+                    if (IsKind(TokenKind.StringLiteral)) Advance();
+                }
+                else if (key == "tool_calls")
+                {
+                    var tcSelector = IsKind(TokenKind.StringLiteral) ? Current().Text : "";
+                    if (IsKind(TokenKind.StringLiteral)) Advance();
+                    Expect(TokenKind.LBrace);
+                    string? idSel = null, nameSel = null, argsSel = null;
+                    while (!IsKind(TokenKind.RBrace) && !IsEof())
+                    {
+                        var k = ExpectIdentifier() ?? "?";
+                        var v = IsKind(TokenKind.StringLiteral) ? Current().Text : null;
+                        if (IsKind(TokenKind.StringLiteral)) Advance();
+                        if (k == "id")             idSel   = v;
+                        else if (k == "tool_name") nameSel = v;
+                        else if (k == "args")      argsSel = v;
+                        else Error($"Unknown tool_calls key '{k}'. Expected id, tool_name, or args.", Current().Location);
+                    }
+                    Expect(TokenKind.RBrace);
+                    toolCalls = new ProviderToolCallsDecl(tcSelector, idSel ?? "", nameSel ?? "", argsSel ?? "");
+                }
+                else
+                {
+                    Error($"Unknown response key '{key}'. Expected text or tool_calls.", Current().Location);
+                }
+            }
+        }
+        Expect(TokenKind.RBrace);
+        return new ProviderResponseDecl(finishReason, textSelector, toolCalls, loc);
     }
 
     private WorkflowDecl? ParseWorkflow()
@@ -744,15 +1108,17 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     }
 
     private static bool IsKeyword(TokenKind kind) =>
-        kind is TokenKind.Schema   or TokenKind.Tool      or TokenKind.Agent    or TokenKind.Workflow
-             or TokenKind.Step     or TokenKind.Call      or TokenKind.Finish   or TokenKind.With
-             or TokenKind.Save     or TokenKind.As        or TokenKind.Context  or TokenKind.Input
-             or TokenKind.Output   or TokenKind.Model     or TokenKind.Tools    or TokenKind.Allow
-             or TokenKind.System   or TokenKind.If        or TokenKind.Else     or TokenKind.When
-             or TokenKind.Require  or TokenKind.Then      or TokenKind.Not      or TokenKind.And
-             or TokenKind.Or       or TokenKind.True      or TokenKind.False    or TokenKind.Enum
-             or TokenKind.Optional or TokenKind.Loop      or TokenKind.Break    or TokenKind.Continue
-             or TokenKind.Max      or TokenKind.Params;
+        kind is TokenKind.Schema      or TokenKind.Tool      or TokenKind.Agent       or TokenKind.Workflow
+             or TokenKind.Step        or TokenKind.Call      or TokenKind.Finish      or TokenKind.With
+             or TokenKind.Save        or TokenKind.As        or TokenKind.Context     or TokenKind.Input
+             or TokenKind.Output      or TokenKind.Model     or TokenKind.Tools       or TokenKind.Allow
+             or TokenKind.System      or TokenKind.If        or TokenKind.Else        or TokenKind.When
+             or TokenKind.Require     or TokenKind.Then      or TokenKind.Not         or TokenKind.And
+             or TokenKind.Or          or TokenKind.True      or TokenKind.False       or TokenKind.Enum
+             or TokenKind.Optional    or TokenKind.Loop      or TokenKind.Break       or TokenKind.Continue
+             or TokenKind.Max         or TokenKind.Params    or TokenKind.Provider    or TokenKind.Env
+             or TokenKind.Response    or TokenKind.Method    or TokenKind.Headers     or TokenKind.Body
+             or TokenKind.FinishReason;
 
     private void SkipToNextRBrace()
     {
@@ -762,9 +1128,24 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
 
     private Declaration? UnexpectedDeclaration(Token tok)
     {
-        Error($"Expected 'schema', 'tool', 'agent', 'workflow', or 'enum', got '{tok.Text}'", tok.Location);
+        Error($"Expected 'schema', 'tool', 'agent', 'workflow', 'enum', or 'provider', got '{tok.Text}'", tok.Location);
         SkipToNextRBrace();
         if (IsKind(TokenKind.RBrace)) Advance();
+        return null;
+    }
+
+    private bool IsKindIdentifier(string name) =>
+        Current().Kind == TokenKind.Identifier && Current().Text == name;
+
+    private string? ExpectStringLiteralValue()
+    {
+        if (IsKind(TokenKind.StringLiteral))
+        {
+            var text = Current().Text;
+            Advance();
+            return text;
+        }
+        Error("Expected string literal.", Current().Location);
         return null;
     }
 
@@ -816,16 +1197,26 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         TokenKind.LtEq      => "<=",
         TokenKind.Gt        => ">",
         TokenKind.GtEq      => ">=",
-        TokenKind.Identifier => "<identifier>",
-        TokenKind.Enum       => "enum",
-        TokenKind.Optional   => "optional",
-        TokenKind.KwDecimal  => "Decimal",
-        TokenKind.Loop       => "loop",
-        TokenKind.Break      => "break",
-        TokenKind.Continue   => "continue",
-        TokenKind.Max        => "max",
-        TokenKind.Params     => "params",
-        TokenKind.Assign     => "=",
+        TokenKind.Identifier   => "<identifier>",
+        TokenKind.Enum         => "enum",
+        TokenKind.Optional     => "optional",
+        TokenKind.KwDecimal    => "Decimal",
+        TokenKind.Loop         => "loop",
+        TokenKind.Break        => "break",
+        TokenKind.Continue     => "continue",
+        TokenKind.Max          => "max",
+        TokenKind.Params       => "params",
+        TokenKind.Assign       => "=",
+        TokenKind.Provider     => "provider",
+        TokenKind.Env          => "env",
+        TokenKind.Response     => "response",
+        TokenKind.Method       => "method",
+        TokenKind.Headers      => "headers",
+        TokenKind.Body         => "body",
+        TokenKind.FinishReason => "finish_reason",
+        TokenKind.Arrow        => "->",
+        TokenKind.Dollar       => "$",
+        TokenKind.Plus         => "+",
         _ => kind.ToString(),
     };
 }

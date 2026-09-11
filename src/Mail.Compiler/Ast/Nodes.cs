@@ -64,14 +64,80 @@ public sealed record AllowedToolEntry(string ToolName, Expr? WhenGuard);
 
 public sealed record AgentDecl(
     string Name,
-    string LogicalModelName,
+    string ProviderRef,
+    string ModelId,
     TypeRef? InputType,
     TypeRef OutputType,
     IReadOnlyList<AllowedToolEntry> AllowedTools,
     SourceLocation Location,
     SystemPromptNode? SystemPrompt = null,
     Expr? RequireInput = null,
-    Expr? RequireOutput = null) : Declaration(Name, Location);
+    Expr? RequireOutput = null) : Declaration(Name, Location)
+{
+    // Temporary backward-compatibility alias used by WorkflowExecutor and IntegrationMode
+    public string LogicalModelName => ModelId;
+}
+
+// ── Provider declarations ─────────────────────────────────────────────────────
+
+public sealed record ProviderDecl(
+    string Name,
+    bool IsSimulated,
+    string? BaseUrl,
+    EnvExpr? ApiKey,
+    ProviderCallDecl? Call,
+    ProviderResponseDecl? Response,
+    SourceLocation Location) : Declaration(Name, Location);
+
+public sealed record EnvExpr(string EnvVarName, SourceLocation Location);
+
+public sealed record ProviderCallDecl(
+    string Method,
+    string Path,
+    IReadOnlyList<HeaderDecl> Headers,
+    IReadOnlyList<BodyFieldDecl> Body,
+    SourceLocation Location);
+
+public sealed record HeaderDecl(string Name, HeaderValue Value);
+
+public abstract record HeaderValue;
+public sealed record LiteralHeaderValue(string Text) : HeaderValue;
+public sealed record FieldHeaderValue(string FieldName) : HeaderValue;
+public sealed record ConcatHeaderValue(IReadOnlyList<HeaderValue> Parts) : HeaderValue;
+
+public sealed record BodyFieldDecl(string Key, BodyValue Value);
+
+public abstract record BodyValue;
+public sealed record StringBodyValue(string Text) : BodyValue;
+public sealed record IntBodyValue(long Number) : BodyValue;
+public sealed record BoolBodyValue(bool Flag) : BodyValue;
+public sealed record ObjectBodyValue(IReadOnlyList<BodyFieldDecl> Fields) : BodyValue;
+public sealed record ArrayBodyValue(IReadOnlyList<BodyValue> Items) : BodyValue;
+public sealed record InterpolationBodyValue(string VarName) : BodyValue;
+public sealed record MessagesBodyValue(IReadOnlyList<MessageMappingDecl> Mappings) : BodyValue;
+public sealed record ToolsBodyValue(IReadOnlyList<BodyFieldDecl> ItemTemplate) : BodyValue;
+public sealed record CallsBodyValue(IReadOnlyList<BodyFieldDecl> ItemTemplate) : BodyValue;
+
+public sealed record MessageMappingDecl(
+    string MessageType,
+    IReadOnlyList<BodyFieldDecl> Template);
+
+public sealed record ProviderResponseDecl(
+    FinishReasonDecl? FinishReason,
+    string? TextSelector,
+    ProviderToolCallsDecl? ToolCalls,
+    SourceLocation Location);
+
+public sealed record FinishReasonDecl(
+    string Selector,
+    string StopValue,
+    string ToolCallsValue);
+
+public sealed record ProviderToolCallsDecl(
+    string Selector,
+    string IdSelector,
+    string ToolNameSelector,
+    string ArgsSelector);
 
 // ── Step bodies ───────────────────────────────────────────────────────────────
 

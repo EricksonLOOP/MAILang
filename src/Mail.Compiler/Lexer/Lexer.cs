@@ -46,11 +46,18 @@ public sealed class Lexer(string source, string filePath)
         ["Decimal"]  = TokenKind.KwDecimal,
         ["enum"]     = TokenKind.Enum,
         ["optional"] = TokenKind.Optional,
-        ["loop"]     = TokenKind.Loop,
-        ["break"]    = TokenKind.Break,
-        ["continue"] = TokenKind.Continue,
-        ["max"]      = TokenKind.Max,
-        ["params"]   = TokenKind.Params,
+        ["loop"]          = TokenKind.Loop,
+        ["break"]         = TokenKind.Break,
+        ["continue"]      = TokenKind.Continue,
+        ["max"]           = TokenKind.Max,
+        ["params"]        = TokenKind.Params,
+        ["provider"]      = TokenKind.Provider,
+        ["env"]           = TokenKind.Env,
+        ["response"]      = TokenKind.Response,
+        ["method"]        = TokenKind.Method,
+        ["headers"]       = TokenKind.Headers,
+        ["body"]          = TokenKind.Body,
+        ["finish_reason"] = TokenKind.FinishReason,
     };
 
     public (IReadOnlyList<Token> Tokens, IReadOnlyList<Diagnostic> Errors) Tokenize()
@@ -137,6 +144,26 @@ public sealed class Lexer(string source, string filePath)
                     {
                         tokens.Add(Single(TokenKind.Gt, loc));
                     }
+                    break;
+                case '-':
+                    if (_pos + 1 < source.Length && source[_pos + 1] == '>')
+                    {
+                        _pos += 2; _col += 2;
+                        tokens.Add(new Token(TokenKind.Arrow, "->", loc));
+                    }
+                    else
+                    {
+                        _errors.Add(new Diagnostic(DiagnosticSeverity.Error, "MAIL-PARSE",
+                            "Unexpected character '-'. Did you mean '->'?", loc));
+                        tokens.Add(new Token(TokenKind.Error, "-", loc));
+                        Advance();
+                    }
+                    break;
+                case '$':
+                    tokens.Add(Single(TokenKind.Dollar, loc));
+                    break;
+                case '+':
+                    tokens.Add(Single(TokenKind.Plus, loc));
                     break;
                 default:
                     _errors.Add(new Diagnostic(
