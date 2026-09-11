@@ -4,8 +4,11 @@ schema TwoToolResponse { result: String }
 tool ToolA { input { value: String } output { result: String } }
 tool ToolB { input { value: String } output { result: String } }
 
+provider Sim { type simulated }
+
 agent RestrictedAgent {
-  model GPT
+  provider Sim
+  model "gpt-4"
   output TwoToolResponse
   tools { allow ToolA }
 }

@@ -19,8 +19,11 @@ tool GetOrderStatus {
   }
 }
 
+provider Sim { type simulated }
+
 agent StatusAgent {
-  model GPT
+  provider Sim
+  model "gpt-4"
   output OrderStatusResponse
   tools {
     allow GetOrderStatus

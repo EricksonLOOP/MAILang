@@ -1,7 +1,9 @@
 import "types.mail" as Types
 import "tools.mail" as Tools
+provider Sim { type simulated }
 agent Echo {
-  model GPT
+  provider Sim
+  model "gpt-4"
   system "Return the token from GenerateToken."
   input Types.Request
   output Types.Response

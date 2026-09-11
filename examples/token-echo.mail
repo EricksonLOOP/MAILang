@@ -11,8 +11,11 @@ tool GenerateToken {
   output { token: String }
 }
 
+provider Sim { type simulated }
+
 agent EchoAgent {
-  model GPT
+  provider Sim
+  model "gpt-4"
   output EchoResponse
   tools { allow GenerateToken }
 }
