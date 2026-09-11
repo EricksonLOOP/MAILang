@@ -4,8 +4,12 @@ tool Echo {
     input { text: String }
     output { text: String }
 }
+provider Sim {
+    type simulated
+}
 agent Writer {
-    model assistant
+    provider Sim
+    model "assistant"
     system "Call Echo and return its JSON result."
     input Request
     require input { input.text != "" }

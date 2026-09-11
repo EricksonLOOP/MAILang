@@ -12,13 +12,18 @@ public sealed class HttpModelProvider(
     string resolvedApiKey,
     HttpClient client) : IModelProvider
 {
-    private const int MaxBodyBytes = 4 * 1024 * 1024;
+    private const int MaxBodyBytes    = 4 * 1024 * 1024;
     private const int MaxErrorExcerpt = 256;
 
     public async Task<ModelResponse> CompleteAsync(ModelRequest request, CancellationToken ct)
     {
-        var url = decl.BaseUrl!.TrimEnd('/') + decl.Call!.Path;
-        using var req = new HttpRequestMessage(new HttpMethod(decl.Call.Method), url);
+        // Only POST is allowed; other methods are a configuration error.
+        if (!string.Equals(decl.Call!.Method, "POST", StringComparison.OrdinalIgnoreCase))
+            throw new ProviderConfigurationException(decl.Name,
+                $"[MAIL-CONFIG-003] HTTP method '{decl.Call.Method}' is not supported; only POST is allowed.");
+
+        var url = decl.BaseUrl!.TrimEnd('/') + decl.Call.Path;
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
 
         foreach (var h in decl.Call.Headers)
             req.Headers.TryAddWithoutValidation(h.Name, EvaluateHeaderValue(h.Value));
@@ -29,7 +34,7 @@ public sealed class HttpModelProvider(
         HttpResponseMessage resp;
         try { resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct); }
         catch (Exception ex) when (ex is not OperationCanceledException)
-        { throw new ProviderHttpException(decl.Name, 0, Truncate(ex.Message, MaxErrorExcerpt)); }
+        { throw new ProviderHttpException(decl.Name, 0, Truncate(RedactSecrets(ex.Message), MaxErrorExcerpt)); }
 
         using (resp)
         {
@@ -49,33 +54,48 @@ public sealed class HttpModelProvider(
                     Truncate(RedactSecrets(raw), MaxErrorExcerpt));
             }
 
+            // Determine finish_reason value first — before any tool_calls interpretation.
+            string? finishReason = null;
             if (decl.Response!.FinishReason is { } fr)
             {
-                var finishVal = NavigateTo(root, fr.Selector)?.GetString();
-                if (finishVal != fr.StopValue && finishVal != fr.ToolCallsValue)
+                finishReason = NavigateTo(root, fr.Selector)?.GetString();
+                if (finishReason != fr.StopValue && finishReason != fr.ToolCallsValue)
                     throw new ProviderResponseException(decl.Name,
-                        $"Unexpected finish_reason: '{finishVal ?? "(null)"}'.");
+                        "Unexpected finish_reason.",
+                        Truncate(RedactSecrets(finishReason ?? "(null)"), MaxErrorExcerpt));
             }
 
-            // Always extract both text and tool_calls — finish_reason only validates completeness
-            string? text = null;
-            List<ToolCallRequest>? toolCalls = null;
+            // Choose branch before parsing tool_calls.
+            bool useToolCallsBranch;
+            if (decl.Response.FinishReason is { } frDecl)
+                useToolCallsBranch = finishReason == frDecl.ToolCallsValue;
+            else
+                // No finish_reason configured — infer from presence of tool_calls in response.
+                useToolCallsBranch = decl.Response.ToolCalls is not null &&
+                                     HasRawToolCalls(root, decl.Response.ToolCalls);
 
-            if (decl.Response.TextSelector is { } textSel)
+            if (useToolCallsBranch)
             {
-                var elem = NavigateTo(root, textSel);
-                if (elem is { ValueKind: JsonValueKind.String })
-                    text = elem.Value.GetString();
+                // tool_calls branch: validate and extract; text is preserved for history.
+                List<ToolCallRequest> toolCalls = [];
+                if (decl.Response.ToolCalls is { } tcDecl)
+                    toolCalls = EvaluateToolCalls(root, tcDecl, decl.Name);
+                // Empty list is an error regardless of whether a selector was declared.
+                if (toolCalls.Count == 0)
+                    throw new InvalidProviderResponseException(
+                        $"Provider '{decl.Name}': finish_reason indicates tool_calls but response contains none.");
+                var text = ExtractText(root, decl.Response.TextSelector);
+                return new ModelResponse(toolCalls, text);
             }
-
-            if (decl.Response.ToolCalls is { } tcDecl)
-                toolCalls = EvaluateToolCalls(root, tcDecl);
-
-            if (string.IsNullOrEmpty(text) && (toolCalls is null || toolCalls.Count == 0))
-                throw new InvalidProviderResponseException(
-                    $"Provider '{decl.Name}' returned a response with neither text nor tool calls.");
-
-            return new ModelResponse(toolCalls is { Count: > 0 } ? toolCalls : null, text);
+            else
+            {
+                // stop branch: return text only; discard tool_calls entirely (no parsing, no validation).
+                var text = ExtractText(root, decl.Response.TextSelector);
+                if (string.IsNullOrEmpty(text))
+                    throw new InvalidProviderResponseException(
+                        $"Provider '{decl.Name}' returned a response with neither text nor tool calls.");
+                return new ModelResponse(null, text);
+            }
         }
     }
 
@@ -84,7 +104,12 @@ public sealed class HttpModelProvider(
     private string EvaluateHeaderValue(HeaderValue value) => value switch
     {
         LiteralHeaderValue lit => lit.Text,
-        FieldHeaderValue f => f.FieldName == "api_key" ? resolvedApiKey : "",
+        FieldHeaderValue f => f.FieldName switch
+        {
+            "api_key"  => resolvedApiKey,
+            "base_url" => decl.BaseUrl ?? "",
+            _          => ""
+        },
         ConcatHeaderValue cat => string.Concat(cat.Parts.Select(EvaluateHeaderValue)),
         _ => ""
     };
@@ -157,7 +182,8 @@ public sealed class HttpModelProvider(
         "model"         => JsonValue.Create(request.ModelId),
         "system"        => request.Messages.OfType<SystemMessage>().FirstOrDefault() is { } sm
                                ? JsonValue.Create(sm.Content) : null,
-        "output_schema" when tool is null => ParseCloneNode(request.ExpectedOutputSchemaJson),
+        // Agent output_schema is serialized as a JSON string (not embedded object).
+        "output_schema" when tool is null => JsonValue.Create(request.ExpectedOutputSchemaJson),
 
         // Message context
         "text" => message switch
@@ -240,61 +266,127 @@ public sealed class HttpModelProvider(
         return arr;
     }
 
+    // ── Response helpers ───────────────────────────────────────────────────────
+
+    private bool HasRawToolCalls(JsonElement root, ProviderToolCallsDecl tcDecl)
+    {
+        var candidates = NavigateToMany(root, tcDecl.Selector);
+        if (candidates.Count == 0) return false;
+        if (candidates.Count == 1 && candidates[0].ValueKind == JsonValueKind.Array)
+            return candidates[0].GetArrayLength() > 0;
+        return true;
+    }
+
+    private string? ExtractText(JsonElement root, string? textSel)
+    {
+        if (textSel is null) return null;
+        var elems = NavigateToMany(root, textSel);
+        var texts = elems
+            .Where(e => e.ValueKind == JsonValueKind.String)
+            .Select(e => e.GetString()!)
+            .ToList();
+        if (texts.Count > 1)
+            Console.Error.WriteLine(
+                $"[MAIL-WARN] Provider '{decl.Name}': selector '{textSel}' matched {texts.Count} text nodes; concatenating with newline.");
+        return texts.Count > 0 ? string.Join("\n", texts) : null;
+    }
+
     // ── Selector evaluation ────────────────────────────────────────────────────
 
-    private static List<ToolCallRequest> EvaluateToolCalls(JsonElement root, ProviderToolCallsDecl tcDecl)
+    private static List<ToolCallRequest> EvaluateToolCalls(
+        JsonElement root, ProviderToolCallsDecl tcDecl, string providerName)
     {
-        var arrayElem = NavigateTo(root, tcDecl.Selector);
-        if (arrayElem is null || arrayElem.Value.ValueKind != JsonValueKind.Array) return [];
+        var candidates = NavigateToMany(root, tcDecl.Selector);
+
+        // Selector may return either a single array element or multiple individual elements (filter result).
+        IEnumerable<JsonElement> items;
+        if (candidates.Count == 1 && candidates[0].ValueKind == JsonValueKind.Array)
+            items = candidates[0].EnumerateArray();
+        else
+            items = candidates;
 
         var results = new List<ToolCallRequest>();
         var ids = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var item in arrayElem.Value.EnumerateArray())
+        foreach (var item in items)
         {
             var id   = NavigateTo(item, tcDecl.IdSelector)?.GetString();
             var name = NavigateTo(item, tcDecl.ToolNameSelector)?.GetString();
-            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(name) || !ids.Add(id!)) continue;
+
+            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(name))
+                throw new InvalidProviderResponseException(
+                    $"Provider '{providerName}' returned a tool call with missing id or name.");
+
+            if (!ids.Add(id!))
+                throw new DuplicateCallIdException(id!);
 
             var argsElem = NavigateTo(item, tcDecl.ArgsSelector);
-            results.Add(new ToolCallRequest(id!, name!, ParseToolArgs(argsElem)));
+            results.Add(new ToolCallRequest(id!, name!, ParseToolArgs(argsElem, providerName)));
         }
         return results;
     }
 
-    private static ImmutableDictionary<string, JsonElement> ParseToolArgs(JsonElement? argsElem)
+    private static ImmutableDictionary<string, JsonElement> ParseToolArgs(
+        JsonElement? argsElem, string providerName)
     {
-        if (argsElem is null) return ImmutableDictionary<string, JsonElement>.Empty;
+        if (argsElem is null)
+            throw new ProviderResponseException(providerName,
+                "Tool call args field is absent from the response.");
+
         var builder = ImmutableDictionary.CreateBuilder<string, JsonElement>(StringComparer.Ordinal);
+
         if (argsElem.Value.ValueKind == JsonValueKind.String)
         {
-            try
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(argsElem.Value.GetString()!); }
+            catch { throw new ProviderResponseException(providerName, "Tool call has unparseable JSON args."); }
+
+            using (doc)
             {
-                using var doc = JsonDocument.Parse(argsElem.Value.GetString()!);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object)
-                    foreach (var p in doc.RootElement.EnumerateObject())
-                        builder[p.Name] = p.Value.Clone();
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                    throw new ProviderResponseException(providerName,
+                        $"Tool call args must be a JSON object, got {doc.RootElement.ValueKind}.");
+                foreach (var p in doc.RootElement.EnumerateObject())
+                    builder[p.Name] = p.Value.Clone();
             }
-            catch { /* invalid JSON args — skip */ }
         }
         else if (argsElem.Value.ValueKind == JsonValueKind.Object)
         {
             foreach (var p in argsElem.Value.EnumerateObject())
                 builder[p.Name] = p.Value.Clone();
         }
+        else
+        {
+            throw new ProviderResponseException(providerName,
+                $"Tool call args must be a JSON object, got {argsElem.Value.ValueKind}.");
+        }
+
         return builder.ToImmutable();
     }
 
-    private static JsonElement? NavigateTo(JsonElement root, string selector)
+    // ── Navigation engine ──────────────────────────────────────────────────────
+
+    // Returns all matching elements for the selector, preserving cardinality.
+    // Filter and wildcard segments fan out over collections; field/index segments reduce.
+    private static List<JsonElement> NavigateToMany(JsonElement root, string selector)
     {
-        var current = root;
+        var current = new List<JsonElement> { root };
         foreach (var seg in ParseSelector(selector))
         {
-            var next = ApplySegment(current, seg);
-            if (next is null) return null;
-            current = next.Value;
+            var next = new List<JsonElement>();
+            foreach (var el in current)
+                next.AddRange(ApplySegmentMany(el, seg));
+            current = next;
+            if (current.Count == 0) return current;
         }
         return current;
+    }
+
+    // Convenience wrapper for callers that expect a single scalar value.
+    private static JsonElement? NavigateTo(JsonElement root, string selector)
+    {
+        var many = NavigateToMany(root, selector);
+        return many.Count > 0 ? many[0] : null;
     }
 
     private abstract record SelectorSegment;
@@ -326,52 +418,62 @@ public sealed class HttpModelProvider(
         return result;
     }
 
-    private static JsonElement? ApplySegment(JsonElement current, SelectorSegment seg)
+    private static IEnumerable<JsonElement> ApplySegmentMany(JsonElement el, SelectorSegment seg)
     {
         switch (seg)
         {
             case FieldSegment f:
-                return current.ValueKind == JsonValueKind.Object &&
-                       current.TryGetProperty(f.Name, out var fv) ? fv : null;
+                if (el.ValueKind == JsonValueKind.Object && el.TryGetProperty(f.Name, out var fv))
+                    yield return fv;
+                break;
 
             case IndexSegment i:
-                if (current.ValueKind != JsonValueKind.Object) return null;
-                if (!current.TryGetProperty(i.Field, out var arr) || arr.ValueKind != JsonValueKind.Array) return null;
-                return i.Index < arr.GetArrayLength() ? arr[i.Index] : null;
+                if (el.ValueKind == JsonValueKind.Object &&
+                    el.TryGetProperty(i.Field, out var arr) &&
+                    arr.ValueKind == JsonValueKind.Array &&
+                    i.Index < arr.GetArrayLength())
+                    yield return arr[i.Index];
+                break;
 
             case WildcardSegment w:
-                if (current.ValueKind != JsonValueKind.Object) return null;
-                return current.TryGetProperty(w.Field, out var warr) &&
-                       warr.ValueKind == JsonValueKind.Array ? warr : null;
+                if (el.ValueKind == JsonValueKind.Object &&
+                    el.TryGetProperty(w.Field, out var warr) &&
+                    warr.ValueKind == JsonValueKind.Array)
+                    foreach (var item in warr.EnumerateArray())
+                        yield return item;
+                break;
 
             case FilterSegment filter:
-                if (current.ValueKind != JsonValueKind.Object) return null;
-                if (!current.TryGetProperty(filter.Field, out var farr) || farr.ValueKind != JsonValueKind.Array) return null;
-                foreach (var elem in farr.EnumerateArray())
-                    if (elem.ValueKind == JsonValueKind.Object &&
-                        elem.TryGetProperty(filter.Key, out var kv) &&
-                        kv.GetString() == filter.Value)
-                        return elem;
-                return null;
-
-            default: return null;
+                if (el.ValueKind == JsonValueKind.Object &&
+                    el.TryGetProperty(filter.Field, out var farr) &&
+                    farr.ValueKind == JsonValueKind.Array)
+                    foreach (var item in farr.EnumerateArray())
+                        if (item.ValueKind == JsonValueKind.Object &&
+                            item.TryGetProperty(filter.Key, out var kv) &&
+                            kv.GetString() == filter.Value)
+                            yield return item;
+                break;
         }
     }
 
     // ── I/O helpers ────────────────────────────────────────────────────────────
 
-    private static async Task<string> ReadBodyAsync(HttpContent content, CancellationToken ct)
+    // Reads the response body up to MaxBodyBytes. Reading even one extra byte triggers MAIL-PROVIDER-003.
+    private async Task<string> ReadBodyAsync(HttpContent content, CancellationToken ct)
     {
-        using var ms = new MemoryStream();
         using var stream = await content.ReadAsStreamAsync(ct);
-        var buf = new byte[65536];
+        var buf = new byte[MaxBodyBytes + 1];
+        var totalRead = 0;
         int read;
-        while ((read = await stream.ReadAsync(buf, ct)) > 0)
-        {
-            ms.Write(buf, 0, read);
-            if (ms.Length >= MaxBodyBytes) break;
-        }
-        return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)Math.Min(ms.Length, MaxBodyBytes));
+        while (totalRead < buf.Length &&
+               (read = await stream.ReadAsync(buf.AsMemory(totalRead), ct)) > 0)
+            totalRead += read;
+
+        if (totalRead > MaxBodyBytes)
+            throw new ProviderResponseException(decl.Name,
+                "[MAIL-PROVIDER-003] Response body exceeds 4 MiB limit.");
+
+        return Encoding.UTF8.GetString(buf, 0, totalRead);
     }
 
     private string RedactSecrets(string text)
@@ -380,11 +482,18 @@ public sealed class HttpModelProvider(
         return text.Replace(resolvedApiKey, "[redacted]", StringComparison.Ordinal);
     }
 
+    // Sanitize secrets first, then truncate so total UTF-8 byte count ≤ maxBytes (including "…").
     private static string Truncate(string text, int maxBytes)
     {
-        if (text.Length <= maxBytes) return text;
+        if (Encoding.UTF8.GetByteCount(text) <= maxBytes) return text;
+        const int EllipsisBytes = 3; // "…" = U+2026 = E2 80 A6 in UTF-8
         var bytes = Encoding.UTF8.GetBytes(text);
-        return bytes.Length <= maxBytes ? text : Encoding.UTF8.GetString(bytes, 0, maxBytes) + "…";
+        var limit = maxBytes - EllipsisBytes;
+        if (limit <= 0) return "…";
+        // Scan back to a valid UTF-8 character boundary (skip continuation bytes 10xxxxxx).
+        while (limit > 0 && (bytes[limit] & 0xC0) == 0x80)
+            limit--;
+        return Encoding.UTF8.GetString(bytes, 0, limit) + "…";
     }
 
     private static JsonNode ParseCloneNode(string json)

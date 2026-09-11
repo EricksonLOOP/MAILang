@@ -55,14 +55,14 @@ Task<ModelResponse> CompleteAsync(ModelRequest request, CancellationToken ct);
 
 Return `ModelResponse(ToolCalls, Text)`. A nonempty tool-call list triggers dispatch; each `ToolCallRequest` has a call ID, tool name, and immutable dictionary of JSON arguments. Duplicate call IDs within a response are rejected. After dispatch, the next request includes matching tool results. To finish, return no tool calls and JSON text conforming to the expected output. A response with neither usable calls nor text fails.
 
-Register with `ProviderRegistry.Register(providerName, implementation)` and map each logical model using `ModelBindings.Register(logicalName, providerName, modelId)`. The bundled `SimulatedModelProvider` accepts a scripted response sequence; `DeepSeekModelProvider` accepts an `HttpClient` and API key. Supply appropriate client lifetime and cancellation handling in your host.
+Register with `ProviderRegistry.Register(providerName, implementation)`. The `providerName` must match the `provider` declaration name in the `.mail` file. The bundled `SimulatedModelProvider` accepts a scripted response sequence. For HTTP providers declared in `.mail`, the CLI resolves them automatically; in a C# host, register any `IModelProvider` implementation under the declared name. Supply appropriate client lifetime and cancellation handling in your host.
 
 ## Execute and observe
 
-Construct `WorkflowExecutor(plan, tools, providers, bindings, limits)`, then call:
+Construct `WorkflowExecutor(plan, tools, providers, limits)`, then call:
 
 ```csharp
-var result = await executor.RunAsync(input, providerName, cancellationToken);
+var result = await executor.RunAsync(input, cancellationToken);
 ```
 
 An optional fourth argument sets the execution ID. Inspect `Succeeded`, `Output`, `ErrorMessage`, `RunId`, `Status`, `TerminalStatus`, `Failure`, and `Events` on the result. `Status` falls back to success/failure when `TerminalStatus` is absent. Construct and validate root input in the host: the executor does not perform complete root-input shape validation before execution.

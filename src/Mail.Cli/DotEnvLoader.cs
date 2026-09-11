@@ -1,32 +1,48 @@
+using System.Collections;
 using System.Text;
 
 namespace Mail.Cli;
 
 public sealed class DotEnvLoader
 {
+    private readonly IReadOnlyDictionary<string, string> _osSnapshot;
     private readonly IReadOnlyDictionary<string, string>? _fileValues;
 
-    private DotEnvLoader(IReadOnlyDictionary<string, string>? fileValues)
-        => _fileValues = fileValues;
+    private DotEnvLoader(IReadOnlyDictionary<string, string> osSnapshot, IReadOnlyDictionary<string, string>? fileValues)
+    {
+        _osSnapshot = osSnapshot;
+        _fileValues = fileValues;
+    }
 
     public static DotEnvLoader Load(string? envFilePath = ".env")
     {
+        var osSnapshot = CaptureOsSnapshot();
         if (envFilePath is null || !File.Exists(envFilePath))
-            return new(null);
-        return new(ParseDotEnvFile(envFilePath));
+            return new(osSnapshot, null);
+        return new(osSnapshot, ParseDotEnvFile(envFilePath));
     }
 
     // For injecting test overrides without touching process env or reading a file.
+    // OS snapshot is left empty so only the supplied overrides are resolved.
     public static DotEnvLoader ForTesting(IReadOnlyDictionary<string, string> overrides)
-        => new(overrides);
+        => new(new Dictionary<string, string>(StringComparer.Ordinal), overrides);
 
     public string? Resolve(string varName)
     {
-        var osValue = Environment.GetEnvironmentVariable(varName);
-        if (!string.IsNullOrEmpty(osValue)) return osValue;
+        if (_osSnapshot.TryGetValue(varName, out var osValue) && !string.IsNullOrEmpty(osValue))
+            return osValue;
         if (_fileValues is not null && _fileValues.TryGetValue(varName, out var fv) && !string.IsNullOrEmpty(fv))
             return fv;
         return null;
+    }
+
+    private static IReadOnlyDictionary<string, string> CaptureOsSnapshot()
+    {
+        var snapshot = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            if (entry.Key is string key && entry.Value is string value)
+                snapshot[key] = value;
+        return snapshot;
     }
 
     private static IReadOnlyDictionary<string, string> ParseDotEnvFile(string path)

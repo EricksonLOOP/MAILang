@@ -41,14 +41,35 @@ public class DotEnvAndRegistrarTests
     }
 
     [Fact]
-    public void DotEnvLoader_os_env_takes_precedence_over_injected_override()
+    public void DotEnvLoader_os_env_takes_precedence_over_dotenv_file()
     {
+        // ForTesting() has an intentionally empty OS snapshot (no live env pollution in tests).
+        // Use Load() with an actual .env file to verify OS snapshot wins over file values.
         var key = $"MAIL_TEST_DOTENV_{Guid.NewGuid():N}";
         Environment.SetEnvironmentVariable(key, "os-value");
+        var path = WriteEnvFile($"{key}=file-value");
         try
         {
-            var loader = DotEnvLoader.ForTesting(new Dictionary<string, string> { [key] = "override-value" });
+            var loader = DotEnvLoader.Load(path);
             Assert.Equal("os-value", loader.Resolve(key));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(key, null);
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void DotEnvLoader_ForTesting_has_empty_os_snapshot_file_overrides_win()
+    {
+        var key = $"MAIL_TEST_DOTENV_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(key, "live-os-value");
+        try
+        {
+            // ForTesting supplies empty OS snapshot; live OS env is not captured.
+            var loader = DotEnvLoader.ForTesting(new Dictionary<string, string> { [key] = "file-value" });
+            Assert.Equal("file-value", loader.Resolve(key));
         }
         finally { Environment.SetEnvironmentVariable(key, null); }
     }

@@ -499,9 +499,11 @@ internal sealed class FakeHttpHandler : HttpMessageHandler
 {
     private readonly HttpStatusCode? _statusCode;
     private readonly string _body;
+    private int _requestCount;
 
     public HttpRequestMessage? LastRequest { get; private set; }
     public string? LastRequestBody { get; private set; }
+    public int RequestCount => _requestCount;
 
     public FakeHttpHandler(HttpStatusCode? statusCode, string body)
     {
@@ -512,6 +514,7 @@ internal sealed class FakeHttpHandler : HttpMessageHandler
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken ct)
     {
+        System.Threading.Interlocked.Increment(ref _requestCount);
         LastRequest = request;
         LastRequestBody = request.Content is not null
             ? await request.Content.ReadAsStringAsync(ct)

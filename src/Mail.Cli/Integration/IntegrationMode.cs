@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using Mail.Cli;
 using Mail.Compiler;
 using Mail.Contracts;
 using Mail.Runtime;
@@ -18,6 +19,11 @@ internal static class IntegrationMode
     {
         Console.InputEncoding  = Encoding.UTF8;
         Console.OutputEncoding = Encoding.UTF8;
+
+        // Snapshot OS env + .env once per process; shared across all executions.
+        var dotEnv = DotEnvLoader.Load();
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+            { Timeout = Timeout.InfiniteTimeSpan };
 
         await using var writer  = new MessageWriter();
         var tracker  = new PendingCallTracker();
@@ -96,7 +102,7 @@ internal static class IntegrationMode
                     break;
 
                 case "run":
-                    HandleRun(root, writer, tracker, registry, outerCt);
+                    HandleRun(root, writer, tracker, registry, dotEnv, http, outerCt);
                     break;
 
                 case "tool_response":
@@ -175,6 +181,8 @@ internal static class IntegrationMode
         MessageWriter writer,
         PendingCallTracker tracker,
         ExecutionRegistry registry,
+        DotEnvLoader dotEnv,
+        HttpClient http,
         CancellationToken outerCt)
     {
         if (!root.TryGetProperty("execution_id", out var exEl) ||
@@ -253,8 +261,17 @@ internal static class IntegrationMode
                     {
                         scriptsByProvider = new Dictionary<string, IReadOnlyList<ScriptStep>>(StringComparer.Ordinal);
                         foreach (var prop in providersEl.EnumerateObject())
+                        {
+                            // Validate ALL names, not only those that carry a script.
+                            if (!plan.Providers.ContainsKey(prop.Name))
+                            {
+                                writer.WriteMessage("run_error", new RunErrorMsg(execId,
+                                    $"[MAIL-PROTO-003] provider_config.providers.{prop.Name} is not declared in the .mail file."));
+                                return;
+                            }
                             if (prop.Value.TryGetProperty("script", out var s))
                                 scriptsByProvider[prop.Name] = ScriptParser.Parse(s);
+                        }
                     }
                     else if (cfg.TryGetProperty("script", out var scriptEl))
                     {
@@ -273,22 +290,26 @@ internal static class IntegrationMode
 
                 var providerReg = new ProviderRegistry();
 
-                foreach (var (name, decl) in plan.Providers)
+                // Simulated providers use AdaptiveIntegrationProvider (stateful per execution);
+                // real providers use the shared DotEnvLoader snapshot and HttpClient.
+                Func<string, IModelProvider> simulatedFactory = name =>
                 {
-                    if (decl.IsSimulated)
-                    {
-                        IReadOnlyList<ScriptStep>? providerScript = null;
-                        if (scriptsByProvider?.TryGetValue(name, out var s) == true)
-                            providerScript = s;
-                        else if (flatScript is not null)
-                            providerScript = flatScript;
-                        providerReg.Register(name, new AdaptiveIntegrationProvider(providerScript));
-                    }
-                    else
-                    {
-                        var apiKey = Environment.GetEnvironmentVariable(decl.ApiKey!.EnvVarName) ?? "";
-                        providerReg.Register(name, new HttpModelProvider(decl, apiKey, new HttpClient()));
-                    }
+                    IReadOnlyList<ScriptStep>? providerScript = null;
+                    if (scriptsByProvider?.TryGetValue(name, out var s) == true)
+                        providerScript = s;
+                    else if (flatScript is not null)
+                        providerScript = flatScript;
+                    return new AdaptiveIntegrationProvider(providerScript);
+                };
+
+                try
+                {
+                    ProviderRegistrar.RegisterDeclaredProviders(providerReg, plan, dotEnv, http, simulatedFactory);
+                }
+                catch (ProviderConfigurationException ex)
+                {
+                    writer.WriteMessage("run_error", new RunErrorMsg(execId, ex.Message));
+                    return;
                 }
 
                 var limits = ParseLimits(root);

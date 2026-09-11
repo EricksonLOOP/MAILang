@@ -1,4 +1,5 @@
 using Mail.Compiler;
+using Mail.Contracts;
 using Mail.Runtime;
 using Mail.Runtime.Providers;
 
@@ -10,13 +11,16 @@ public static class ProviderRegistrar
         ProviderRegistry registry,
         ValidatedPlan plan,
         DotEnvLoader env,
-        HttpClient client)
+        HttpClient client,
+        Func<string, IModelProvider>? simulatedFactory = null)
     {
         foreach (var (name, decl) in plan.Providers)
         {
             if (decl.IsSimulated)
             {
-                registry.Register(name, new SimulatedModelProvider([]));
+                registry.Register(name, simulatedFactory is not null
+                    ? simulatedFactory(name)
+                    : new SimulatedModelProvider([]));
             }
             else
             {

@@ -8,7 +8,7 @@ After the [build/setup](getting-started.md), use:
 
 ```text
 mail validate file.mail
-mail run file.mail [--provider simulated|deepseek] [--input JSON]
+mail run file.mail [--input JSON]
 mail integrate
 ```
 
@@ -16,23 +16,21 @@ Here `mail` represents the built executable, named `Mail.Cli.exe` on Windows. `v
 
 `run` prints final output JSON to stdout and diagnostics/events to stderr. `integrate` needs no file argument and reserves stdout for protocol messages. `--input` takes JSON text, not a filename. In PowerShell, read a fixture into a variable and pass that variable, as shown in getting started.
 
-Standalone `run` reads `appsettings.json` from the current working directory. Example configuration:
+Providers and model bindings are declared directly in the `.mail` file using `provider` blocks. A simulated provider requires no credentials:
 
-```json
-{
-  "Provider": "simulated",
-  "ModelBindings": {
-    "assistant": {"Provider": "deepseek", "ModelId": "YOUR_MODEL_ID"}
-  },
-  "Limits": {
-    "MaxToolCallsPerAgent": 10,
-    "MaxModelCallsPerAgent": 5,
-    "TimeoutSeconds": 30
-  }
+```mail
+provider Sim {
+  type simulated
+}
+
+agent MyAgent {
+  provider Sim
+  model "my-model"
+  ...
 }
 ```
 
-The CLI provider flag overrides `Provider`. With `simulated`, logical models are bound to the simulator. With `deepseek`, a matching configured binding is used; otherwise the CLI uses `DEEPSEEK_MODEL`, falling back to the model string `deepseek-v4-flash` currently in source. `DEEPSEEK_API_KEY` supplies credentials. These are implementation defaults, not a guarantee of external model availability; set the desired model explicitly.
+An HTTP provider is self-described in the file (base URL, API key env var, call/response mappings). Credentials are resolved from the OS environment and from a `.env` file in the working directory at startup. `Limits` can be supplied via the `--limits` flag or left at defaults (10 tool calls and 5 model calls per agent, 5-minute timeout).
 
 The standalone tool registry supplies a special `GenerateToken` implementation and demonstration echo implementations for other declared tools. It does not discover your Python functions. The ordinary CLI simulator scripts only the first top-level agent step; it is not a general workflow simulator. Use the SDK tutorial for deterministic multi-step execution.
 
