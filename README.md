@@ -1,4 +1,6 @@
-MAIL — Multi-Agent Infrastructure Language
+<img src='.\public\assets\mailang_logo_marca.svg' width='100%' height='100%'/>
+
+# MAIL — Multi-Agent Infrastructure Language
 A declarative language for designing, connecting, governing, and executing AI agents.
 
 ## Documentation
