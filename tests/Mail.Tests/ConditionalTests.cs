@@ -302,8 +302,10 @@ public class ConditionalCompilerTests
             schema Resp { r: String }
             tool Lookup { input { id: String } output { name: String } }
             tool Update { input { name: String } output { ok: Bool } }
+            provider Sim { type simulated }
             agent Resolver {
-              model GPT
+              provider Sim
+              model "gpt-4"
               input Req
               output Resp
               tools {
@@ -330,8 +332,10 @@ public class ConditionalCompilerTests
         var src = """
             schema Resp { r: String }
             tool T { input { x: String } output { y: String } }
+            provider Sim { type simulated }
             agent A {
-              model GPT
+              provider Sim
+              model "gpt-4"
               output Resp
               tools {
                 allow T when input.x == "ok"
@@ -361,12 +365,11 @@ public class ConditionalRuntimeTests
         return reg;
     }
 
-    private static (ProviderRegistry, ModelBindings) BuildProviders(string name, IModelProvider provider)
+    private static ProviderRegistry BuildProviders(IModelProvider provider)
     {
         var pr = new ProviderRegistry();
-        pr.Register(name, provider);
-        var mb = new ModelBindings();
-        return (pr, mb);
+        pr.Register("Sim", provider);
+        return pr;
     }
 
     private static async Task<ExecutionResult> Run(string source, MailValue input, IModelProvider provider, ToolRegistry? tools = null)
@@ -378,9 +381,9 @@ public class ConditionalRuntimeTests
         Assert.NotNull(plan);
 
         tools ??= new ToolRegistry();
-        var (providers, bindings) = BuildProviders("sim", provider);
-        var executor = new WorkflowExecutor(plan!, tools, providers, bindings, ExecutionLimits.Default);
-        return await executor.RunAsync(input, "sim", CancellationToken.None);
+        var providers = BuildProviders(provider);
+        var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
+        return await executor.RunAsync(input, CancellationToken.None);
     }
 
     // ── Branch selection ──────────────────────────────────────────────────────
@@ -789,8 +792,10 @@ public class ConditionalRuntimeTests
             schema Resp { name: String }
             tool Lookup { input { id: String } output { name: String } }
             tool Update { input { name: String } output { ok: Bool } }
+            provider Sim { type simulated }
             agent Resolver {
-              model GPT
+              provider Sim
+              model "gpt-4"
               input Req
               output Resp
               tools {
@@ -815,16 +820,16 @@ public class ConditionalRuntimeTests
                 Text: null),
         };
 
-        var (providers, bindings) = BuildProviders("sim", new CapturingModelProvider(script));
+        var providers = BuildProviders(new CapturingModelProvider(script));
         var (plan, _) = MailCompiler.Compile(src, "test.mail");
         Assert.NotNull(plan);
 
-        var executor = new WorkflowExecutor(plan!, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("Req", ImmutableDictionary<string, MailValue>.Empty
             .Add("id", new MailString("u1"))
             .Add("can_update", new MailBool(false)));
 
-        var result = await executor.RunAsync(input, "sim", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.False(updateCalled);
@@ -853,8 +858,10 @@ public class ConditionalRuntimeTests
             schema Resp { name: String }
             tool Lookup { input { id: String } output { name: String } }
             tool Update { input { name: String } output { ok: Bool } }
+            provider Sim { type simulated }
             agent Resolver {
-              model GPT
+              provider Sim
+              model "gpt-4"
               input Req
               output Resp
               tools {
@@ -878,16 +885,16 @@ public class ConditionalRuntimeTests
             new(ToolCalls: null, Text: "{\"name\":\"Bob\"}"),
         };
 
-        var (providers, bindings) = BuildProviders("sim", new CapturingModelProvider(script));
+        var providers = BuildProviders(new CapturingModelProvider(script));
         var (plan, _) = MailCompiler.Compile(src, "test.mail");
         Assert.NotNull(plan);
 
-        var executor = new WorkflowExecutor(plan!, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("Req", ImmutableDictionary<string, MailValue>.Empty
             .Add("id", new MailString("u1"))
             .Add("can_update", new MailBool(true)));
 
-        var result = await executor.RunAsync(input, "sim", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.True(updateCalled);
@@ -932,9 +939,9 @@ public class ConditionalRuntimeTests
         {
             var flag = i % 2 == 0;
             var input = MkSchema2("flag", new MailBool(flag), "x", new MailString($"x{i}"));
-            var (providers, bindings) = BuildProviders("sim", new NoOpModelProvider());
-            var executor = new WorkflowExecutor(plan!, tools, providers, bindings, ExecutionLimits.Default);
-            return executor.RunAsync(input, "sim", CancellationToken.None);
+            var providers = BuildProviders(new NoOpModelProvider());
+            var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
+            return executor.RunAsync(input, CancellationToken.None);
         });
 
         var allResults = await Task.WhenAll(tasks);

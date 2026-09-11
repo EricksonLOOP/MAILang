@@ -16,7 +16,7 @@ public class VerificationTests
     private static readonly string OrderStatusSource = File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "../../../../..", "examples", "order-status.mail"));
 
-    private static (ToolRegistry Tools, ProviderRegistry Providers, ModelBindings Bindings)
+    private static (ToolRegistry Tools, ProviderRegistry Providers)
         BuildTokenRegistries(IToolImplementation tool)
     {
         var tools = new ToolRegistry();
@@ -26,7 +26,7 @@ public class VerificationTests
             [new FieldContract("prompt", MailTypeKind.String, Required: true)],
             [new FieldContract("token",  MailTypeKind.String, Required: true)]);
 
-        return (tools, new ProviderRegistry(), new ModelBindings());
+        return (tools, new ProviderRegistry());
     }
 
     [Fact]
@@ -36,14 +36,14 @@ public class VerificationTests
         Assert.NotNull(plan);
 
         var tokenTool = new TokenEchoTool();
-        var (tools, providers, bindings) = BuildTokenRegistries(tokenTool);
-        providers.Register("simulated", new AdaptiveTokenProvider());
+        var (tools, providers) = BuildTokenRegistries(tokenTool);
+        providers.Register("Sim", new AdaptiveTokenProvider());
 
-        var executor = new WorkflowExecutor(plan, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("EchoRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("prompt", new MailString("verify-cycle")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
 
@@ -64,16 +64,16 @@ public class VerificationTests
         Assert.NotNull(plan);
 
         var tokenTool = new TokenEchoTool();
-        var (tools, providers, bindings) = BuildTokenRegistries(tokenTool);
-        providers.Register("simulated", new SimulatedModelProvider([
+        var (tools, providers) = BuildTokenRegistries(tokenTool);
+        providers.Register("Sim", new SimulatedModelProvider([
             new ModelResponse(null, """{"token":"fabricated-token-not-from-tool"}""")
         ]));
 
-        var executor = new WorkflowExecutor(plan, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("EchoRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("prompt", new MailString("test")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         // Structurally valid — execution succeeds
         Assert.True(result.Succeeded, result.ErrorMessage);
@@ -111,8 +111,7 @@ public class VerificationTests
             [new FieldContract("success",  MailTypeKind.Bool,   Required: true)]);
 
         var providers = new ProviderRegistry();
-        var bindings  = new ModelBindings();
-        providers.Register("simulated", new SimulatedModelProvider([
+        providers.Register("Sim", new SimulatedModelProvider([
             new ModelResponse(
                 ToolCalls:
                 [
@@ -125,11 +124,11 @@ public class VerificationTests
                 Text: null)
         ]));
 
-        var executor = new WorkflowExecutor(plan, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("ORD-99")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains(result.Events, e => e.Kind == "tool.denied");

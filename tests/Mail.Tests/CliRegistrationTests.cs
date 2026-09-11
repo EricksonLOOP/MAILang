@@ -27,14 +27,13 @@ public class CliRegistrationTests
         Assert.IsType<GenerateTokenTool>(tokenTool);
 
         var providers = new ProviderRegistry();
-        var bindings  = new ModelBindings();
-        providers.Register("simulated", new AdaptiveTokenProvider());
+        providers.Register("Sim", new AdaptiveTokenProvider());
 
-        var executor = new WorkflowExecutor(plan, registry, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, registry, providers, ExecutionLimits.Default);
         var input = new MailSchema("EchoRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("prompt", new MailString("cli-reg-test")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
 
@@ -58,18 +57,17 @@ public class CliRegistrationTests
         Assert.NotNull(tokenTool);
 
         var providers = new ProviderRegistry();
-        var bindings  = new ModelBindings();
 
         // Provider fabricates a token without dispatching the tool
-        providers.Register("simulated", new SimulatedModelProvider([
+        providers.Register("Sim", new SimulatedModelProvider([
             new ModelResponse(null, """{"token":"fabricated-bypassed-token"}""")
         ]));
 
-        var executor = new WorkflowExecutor(plan, registry, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, registry, providers, ExecutionLimits.Default);
         var input = new MailSchema("EchoRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("prompt", new MailString("bypass-test")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage); // valid structure
 

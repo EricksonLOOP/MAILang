@@ -13,7 +13,7 @@ public class RuntimeTests
     private static readonly string OrderStatusSource = File.ReadAllText(
         Path.Combine(AppContext.BaseDirectory, "../../../../..", "examples", "order-status.mail"));
 
-    private static (ToolRegistry Tools, ProviderRegistry Providers, ModelBindings Bindings) BuildRegistries()
+    private static (ToolRegistry Tools, ProviderRegistry Providers) BuildRegistries()
     {
         var tools = new ToolRegistry();
         tools.Register(
@@ -27,8 +27,7 @@ public class RuntimeTests
             ]);
 
         var providers = new ProviderRegistry();
-        var bindings = new ModelBindings();
-        return (tools, providers, bindings);
+        return (tools, providers);
     }
 
     [Fact]
@@ -37,7 +36,7 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
 
-        var (tools, providerRegistry, bindings) = BuildRegistries();
+        var (tools, providerRegistry) = BuildRegistries();
         var limits = ExecutionLimits.Default;
 
         // Script: first call → tool call; second call → final JSON response
@@ -59,13 +58,13 @@ public class RuntimeTests
                 Text: """{"order_id":"ORD-42","status":"shipped","found":true}"""),
         };
 
-        providerRegistry.Register("simulated", new SimulatedModelProvider(script));
+        providerRegistry.Register("Sim", new SimulatedModelProvider(script));
 
-        var executor = new WorkflowExecutor(plan, tools, providerRegistry, bindings, limits);
+        var executor = new WorkflowExecutor(plan, tools, providerRegistry, limits);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("ORD-42")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
         var output = Assert.IsType<MailSchema>(result.Output);
@@ -100,7 +99,6 @@ public class RuntimeTests
             [new FieldContract("success",  MailTypeKind.Bool,   Required: true)]);
 
         var providerRegistry = new ProviderRegistry();
-        var bindings = new ModelBindings();
 
         // Provider script: requests DeleteOrder (not in agent's allow list)
         var script = new List<ModelResponse>
@@ -118,13 +116,13 @@ public class RuntimeTests
                 Text: null),
         };
 
-        providerRegistry.Register("simulated", new SimulatedModelProvider(script));
+        providerRegistry.Register("Sim", new SimulatedModelProvider(script));
 
-        var executor = new WorkflowExecutor(plan, tools, providerRegistry, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providerRegistry, ExecutionLimits.Default);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("ORD-42")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains("not allowed", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
@@ -137,7 +135,7 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
 
-        var (tools, providerRegistry, bindings) = BuildRegistries();
+        var (tools, providerRegistry) = BuildRegistries();
 
         // Script: many tool calls to exhaust budget (limit is 2)
         var script = new List<ModelResponse>();
@@ -154,14 +152,14 @@ public class RuntimeTests
                 ],
                 Text: null));
 
-        providerRegistry.Register("simulated", new SimulatedModelProvider(script));
+        providerRegistry.Register("Sim", new SimulatedModelProvider(script));
 
         var tightLimits = ExecutionLimits.Validated(2, 5, TimeSpan.FromSeconds(30)); // max 2 tool calls
-        var executor = new WorkflowExecutor(plan, tools, providerRegistry, bindings, tightLimits);
+        var executor = new WorkflowExecutor(plan, tools, providerRegistry, tightLimits);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("X")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains("budget", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
@@ -173,15 +171,15 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
 
-        var (tools, providerRegistry, bindings) = BuildRegistries();
+        var (tools, providerRegistry) = BuildRegistries();
         var script = new List<ModelResponse> { new(null, null) }; // empty response
-        providerRegistry.Register("simulated", new SimulatedModelProvider(script));
+        providerRegistry.Register("Sim", new SimulatedModelProvider(script));
 
-        var executor = new WorkflowExecutor(plan, tools, providerRegistry, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providerRegistry, ExecutionLimits.Default);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("X")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains("neither tool calls nor text", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
@@ -193,7 +191,7 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
 
-        var (tools, providerRegistry, bindings) = BuildRegistries();
+        var (tools, providerRegistry) = BuildRegistries();
 
         var dupCallId = ImmutableDictionary<string, JsonElement>.Empty.Add(
             "order_id", JsonDocument.Parse("\"X\"").RootElement.Clone());
@@ -207,13 +205,13 @@ public class RuntimeTests
                 ],
                 Text: null),
         };
-        providerRegistry.Register("simulated", new SimulatedModelProvider(script));
+        providerRegistry.Register("Sim", new SimulatedModelProvider(script));
 
-        var executor = new WorkflowExecutor(plan, tools, providerRegistry, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providerRegistry, ExecutionLimits.Default);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("X")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains("dup-id", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
@@ -225,17 +223,17 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
 
-        var (tools, providerRegistry, bindings) = BuildRegistries();
+        var (tools, providerRegistry) = BuildRegistries();
 
         // Provider that delays forever
-        providerRegistry.Register("simulated", new SlowProvider());
+        providerRegistry.Register("Sim", new SlowProvider());
 
         var tightTimeout = ExecutionLimits.Validated(10, 5, TimeSpan.FromMilliseconds(100));
-        var executor = new WorkflowExecutor(plan, tools, providerRegistry, bindings, tightTimeout);
+        var executor = new WorkflowExecutor(plan, tools, providerRegistry, tightTimeout);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("X")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains("timed out", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
@@ -248,11 +246,11 @@ public class RuntimeTests
     public async Task Agent_output_must_match_declared_schema(string json)
     {
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
-        var (tools, providers, bindings) = BuildRegistries();
-        providers.Register("simulated", new SimulatedModelProvider([new ModelResponse(null, json)]));
-        var executor = new WorkflowExecutor(plan!, tools, providers, bindings, ExecutionLimits.Default);
+        var (tools, providers) = BuildRegistries();
+        providers.Register("Sim", new SimulatedModelProvider([new ModelResponse(null, json)]));
+        var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("OrderStatusRequest", ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("X")));
-        var result = await executor.RunAsync(input, "simulated", default);
+        var result = await executor.RunAsync(input, default);
         Assert.False(result.Succeeded);
         Assert.DoesNotContain(result.Events, e => e.Kind == "step.completed");
     }
@@ -275,8 +273,11 @@ public class RuntimeTests
           output { echo: String }
         }
 
+        provider Sim { type simulated }
+
         agent PromptAgent {
-          model GPT
+          provider Sim
+          model "gpt-4"
           system "Author instructions for PromptAgent."
           output SystemTestResponse
           tools { allow Echo }
@@ -296,14 +297,14 @@ public class RuntimeTests
         }
         """;
 
-    private static (ToolRegistry Tools, ProviderRegistry Providers, ModelBindings Bindings) BuildSystemTestRegistries()
+    private static (ToolRegistry Tools, ProviderRegistry Providers) BuildSystemTestRegistries()
     {
         var tools = new ToolRegistry();
         tools.Register("Echo",
             new EchoTool(),
             [new FieldContract("text", MailTypeKind.String, Required: true)],
             [new FieldContract("echo", MailTypeKind.String, Required: true)]);
-        return (tools, new ProviderRegistry(), new ModelBindings());
+        return (tools, new ProviderRegistry());
     }
 
     private static ModelResponse FinalResponse(string answer) =>
@@ -315,15 +316,15 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(SystemPromptSource, "test.mail");
         Assert.NotNull(plan);
 
-        var (tools, providers, bindings) = BuildSystemTestRegistries();
+        var (tools, providers) = BuildSystemTestRegistries();
         var capturing = new CapturingModelProvider([FinalResponse("ok")]);
-        providers.Register("simulated", capturing);
+        providers.Register("Sim", capturing);
 
-        var executor = new WorkflowExecutor(plan, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("SystemTestRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("query", new MailString("q")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.NotEmpty(capturing.Captures);
@@ -338,7 +339,7 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(SystemPromptSource, "test.mail");
         Assert.NotNull(plan);
 
-        var (tools, providers, bindings) = BuildSystemTestRegistries();
+        var (tools, providers) = BuildSystemTestRegistries();
 
         var script = new List<ModelResponse>
         {
@@ -350,13 +351,13 @@ public class RuntimeTests
             FinalResponse("done"),
         };
         var capturing = new CapturingModelProvider(script);
-        providers.Register("simulated", capturing);
+        providers.Register("Sim", capturing);
 
-        var executor = new WorkflowExecutor(plan, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("SystemTestRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("query", new MailString("q")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
         Assert.Equal(2, capturing.Captures.Count);
@@ -373,16 +374,16 @@ public class RuntimeTests
         var (plan, _) = MailCompiler.Compile(OrderStatusSource, "order-status.mail");
         Assert.NotNull(plan);
 
-        var (tools, providers, bindings) = BuildRegistries();
+        var (tools, providers) = BuildRegistries();
         var script = new List<ModelResponse> { new(null, """{"order_id":"X","status":"ok","found":true}""") };
         var capturing = new CapturingModelProvider(script);
-        providers.Register("simulated", capturing);
+        providers.Register("Sim", capturing);
 
-        var executor = new WorkflowExecutor(plan, tools, providers, bindings, ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("OrderStatusRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("order_id", new MailString("X")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.True(result.Succeeded, result.ErrorMessage);
         var sysMsg = Assert.IsType<SystemMessage>(capturing.Captures[0][0]);
@@ -396,8 +397,10 @@ public class RuntimeTests
             schema Req { q: String }
             schema Resp { a: String }
             tool T { input { q: String } output { a: String } }
+            provider Sim { type simulated }
             agent AgentA {
-              model GPT
+              provider Sim
+              model "gpt-4"
               system "Prompt for AgentA."
               output Resp
               tools { allow T }
@@ -413,8 +416,10 @@ public class RuntimeTests
             schema Req { q: String }
             schema Resp { a: String }
             tool T { input { q: String } output { a: String } }
+            provider Sim { type simulated }
             agent AgentB {
-              model GPT
+              provider Sim
+              model "gpt-4"
               system "Prompt for AgentB."
               output Resp
               tools { allow T }
@@ -438,17 +443,17 @@ public class RuntimeTests
         var capturingA = new CapturingModelProvider([new ModelResponse(null, "{\"a\":\"x\"}")]);
         var capturingB = new CapturingModelProvider([new ModelResponse(null, "{\"a\":\"y\"}")]);
 
-        var providersA = new ProviderRegistry(); providersA.Register("simulated", capturingA);
-        var providersB = new ProviderRegistry(); providersB.Register("simulated", capturingB);
+        var providersA = new ProviderRegistry(); providersA.Register("Sim", capturingA);
+        var providersB = new ProviderRegistry(); providersB.Register("Sim", capturingB);
 
         var input = new MailSchema("Req",
             ImmutableDictionary<string, MailValue>.Empty.Add("q", new MailString("test")));
 
         // Launch both concurrently and ensure overlap
-        var taskA = Task.Run(() => new WorkflowExecutor(planA, tools, providersA, new ModelBindings(), ExecutionLimits.Default)
-            .RunAsync(input, "simulated", CancellationToken.None));
-        var taskB = Task.Run(() => new WorkflowExecutor(planB, tools, providersB, new ModelBindings(), ExecutionLimits.Default)
-            .RunAsync(input, "simulated", CancellationToken.None));
+        var taskA = Task.Run(() => new WorkflowExecutor(planA, tools, providersA, ExecutionLimits.Default)
+            .RunAsync(input, CancellationToken.None));
+        var taskB = Task.Run(() => new WorkflowExecutor(planB, tools, providersB, ExecutionLimits.Default)
+            .RunAsync(input, CancellationToken.None));
 
         var results = await Task.WhenAll(taskA, taskB);
         Assert.All(results, r => Assert.True(r.Succeeded, r.ErrorMessage));
@@ -471,8 +476,10 @@ public class RuntimeTests
             schema Resp { a: String }
             tool Safe { input { q: String } output { a: String } }
             tool Forbidden { input { q: String } output { a: String } }
+            provider Sim { type simulated }
             agent PromptedAgent {
-              model GPT
+              provider Sim
+              model "gpt-4"
               system "You may call Forbidden."
               output Resp
               tools { allow Safe }
@@ -505,13 +512,13 @@ public class RuntimeTests
                         "q", JsonDocument.Parse("\"x\"").RootElement.Clone()))],
                 Text: null),
         };
-        providers.Register("simulated", new SimulatedModelProvider(script));
+        providers.Register("Sim", new SimulatedModelProvider(script));
 
-        var executor = new WorkflowExecutor(plan, tools, providers, new ModelBindings(), ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("Req",
             ImmutableDictionary<string, MailValue>.Empty.Add("q", new MailString("test")));
 
-        var result = await executor.RunAsync(input, "simulated", CancellationToken.None);
+        var result = await executor.RunAsync(input, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         Assert.Contains("not allowed", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);

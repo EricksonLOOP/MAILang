@@ -8,7 +8,6 @@ public sealed class WorkflowExecutor(
     ValidatedPlan plan,
     IToolRegistry tools,
     IProviderRegistry providers,
-    IModelBindings modelBindings,
     ExecutionLimits limits)
 {
     private readonly AuthorizationChecker _auth = new();
@@ -16,7 +15,6 @@ public sealed class WorkflowExecutor(
 
     public async Task<ExecutionResult> RunAsync(
         MailValue input,
-        string providerName,
         CancellationToken ct,
         string? executionId = null)
     {
@@ -55,7 +53,7 @@ public sealed class WorkflowExecutor(
                 }
             }
 
-            state = await ExecuteWorkflowItemsAsync(plan.Workflow.Items, state, providerName, ctx, linkedCt);
+            state = await ExecuteWorkflowItemsAsync(plan.Workflow.Items, state, ctx, linkedCt);
 
             var output = state.Resolve(plan.Workflow.Finish);
             // Preserve the original entry-workflow boundary for existing programs.
@@ -120,7 +118,6 @@ public sealed class WorkflowExecutor(
     private async Task<ExecutionState> ExecuteWorkflowItemsAsync(
         IReadOnlyList<WorkflowItem> items,
         ExecutionState state,
-        string providerName,
         ExecutionContext ctx,
         CancellationToken ct)
     {
@@ -143,7 +140,7 @@ public sealed class WorkflowExecutor(
                         $"Activation of step '{step.Name}' started.",
                         stepId: stepId.Value, activationId: actId.Value);
 
-                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, ctx, actId, ct);
+                    var result = await ExecuteStepBodyAsync(step.Body, state, ctx, actId, ct);
                     state = state.Publish(step.SaveAs, result);
 
                     ctx.Logger.Log("step.completed",
@@ -161,12 +158,12 @@ public sealed class WorkflowExecutor(
 
                     if (condValue)
                     {
-                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Then, state, providerName, ctx, ct);
+                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Then, state, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     else if (ifItem.Else is not null)
                     {
-                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Else, state, providerName, ctx, ct);
+                        var branchState = await ExecuteWorkflowItemsAsync(ifItem.Else, state, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     break;
@@ -174,7 +171,7 @@ public sealed class WorkflowExecutor(
                 case LoopItem loopItem:
                     ctx.Logger.Log("loop.started",
                         $"Loop '{loopItem.Name}' started (max {loopItem.MaxIterations} iterations).");
-                    var loopResult = await ExecuteLoopAsync(loopItem, state, providerName, ctx, ct);
+                    var loopResult = await ExecuteLoopAsync(loopItem, state, ctx, ct);
                     state = state.Publish(loopItem.SaveAs, loopResult);
                     ctx.Logger.Log("loop.completed",
                         $"Loop '{loopItem.Name}' completed, saved as '{loopItem.SaveAs}'.");
@@ -187,7 +184,6 @@ public sealed class WorkflowExecutor(
     private async Task<MailValue> ExecuteLoopAsync(
         LoopItem loop,
         ExecutionState outerState,
-        string providerName,
         ExecutionContext ctx,
         CancellationToken ct)
     {
@@ -207,7 +203,7 @@ public sealed class WorkflowExecutor(
 
             try
             {
-                await ExecuteLoopBodyAsync(loop.Body, iterState, providerName, ctx, ct);
+                await ExecuteLoopBodyAsync(loop.Body, iterState, ctx, ct);
                 throw new InvalidOperationException(
                     $"Loop '{loop.Name}' body completed iteration {iteration} without 'break' or 'continue'.");
             }
@@ -241,7 +237,6 @@ public sealed class WorkflowExecutor(
     private async Task<ExecutionState> ExecuteLoopBodyAsync(
         IReadOnlyList<WorkflowItem> items,
         ExecutionState state,
-        string providerName,
         ExecutionContext ctx,
         CancellationToken ct)
     {
@@ -264,7 +259,7 @@ public sealed class WorkflowExecutor(
                         $"Activation of step '{step.Name}' (loop body) started.",
                         stepId: stepId.Value, activationId: actId.Value);
 
-                    var result = await ExecuteStepBodyAsync(step.Body, state, providerName, ctx, actId, ct);
+                    var result = await ExecuteStepBodyAsync(step.Body, state, ctx, actId, ct);
                     state = state.Publish(step.SaveAs, result);
 
                     ctx.Logger.Log("step.completed",
@@ -282,12 +277,12 @@ public sealed class WorkflowExecutor(
 
                     if (condValue)
                     {
-                        var branchState = await ExecuteLoopBodyAsync(ifItem.Then, state, providerName, ctx, ct);
+                        var branchState = await ExecuteLoopBodyAsync(ifItem.Then, state, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     else if (ifItem.Else is not null)
                     {
-                        var branchState = await ExecuteLoopBodyAsync(ifItem.Else, state, providerName, ctx, ct);
+                        var branchState = await ExecuteLoopBodyAsync(ifItem.Else, state, ctx, ct);
                         state = state.MergeFrom(branchState);
                     }
                     break;
@@ -295,7 +290,7 @@ public sealed class WorkflowExecutor(
                 case LoopItem nestedLoop:
                     ctx.Logger.Log("loop.started",
                         $"Loop '{nestedLoop.Name}' started (max {nestedLoop.MaxIterations} iterations).");
-                    var loopResult = await ExecuteLoopAsync(nestedLoop, state, providerName, ctx, ct);
+                    var loopResult = await ExecuteLoopAsync(nestedLoop, state, ctx, ct);
                     state = state.Publish(nestedLoop.SaveAs, loopResult);
                     ctx.Logger.Log("loop.completed",
                         $"Loop '{nestedLoop.Name}' completed, saved as '{nestedLoop.SaveAs}'.");
@@ -317,7 +312,6 @@ public sealed class WorkflowExecutor(
     private async Task<MailValue> ExecuteStepBodyAsync(
         StepBody body,
         ExecutionState state,
-        string providerName,
         ExecutionContext ctx,
         ActivationId actId,
         CancellationToken ct)
@@ -328,10 +322,10 @@ public sealed class WorkflowExecutor(
                 return await ExecuteCallStepAsync(cb, state, ctx, actId, ct);
 
             case AgentBody ab:
-                return await ExecuteAgentStepAsync(ab, state, providerName, ctx, actId, ct);
+                return await ExecuteAgentStepAsync(ab, state, ctx, actId, ct);
 
             case WorkflowCallBody wcb:
-                return await ExecuteSubworkflowAsync(wcb, state, providerName, ctx, actId, ct);
+                return await ExecuteSubworkflowAsync(wcb, state, ctx, actId, ct);
 
             case ConditionalStepBody csb:
                 var cond = ExprEvaluator.EvalBool(csb.Condition, state, "step if");
@@ -339,7 +333,7 @@ public sealed class WorkflowExecutor(
                     $"Step branch condition evaluated to {cond}.",
                     activationId: actId.Value);
                 return await ExecuteStepBodyAsync(
-                    cond ? csb.Then : csb.Else, state, providerName, ctx, actId, ct);
+                    cond ? csb.Then : csb.Else, state, ctx, actId, ct);
 
             default:
                 throw new InvalidOperationException($"Unknown step body type: {body.GetType().Name}");
@@ -349,7 +343,6 @@ public sealed class WorkflowExecutor(
     private async Task<MailValue> ExecuteSubworkflowAsync(
         WorkflowCallBody wcb,
         ExecutionState state,
-        string providerName,
         ExecutionContext ctx,
         ActivationId actId,
         CancellationToken ct)
@@ -379,7 +372,7 @@ public sealed class WorkflowExecutor(
 
             // Share parent ctx: same RunId, same deadline CancellationToken, same GlobalBudget.
             childState = await ExecuteWorkflowItemsAsync(
-                childWorkflow.Items, childState, providerName, ctx, ct);
+                childWorkflow.Items, childState, ctx, ct);
 
             ct.ThrowIfCancellationRequested();
             var output = childState.Resolve(childWorkflow.Finish);
@@ -466,7 +459,6 @@ public sealed class WorkflowExecutor(
     private async Task<MailValue> ExecuteAgentStepAsync(
         AgentBody ab,
         ExecutionState state,
-        string providerName,
         ExecutionContext ctx,
         ActivationId actId,
         CancellationToken ct)
@@ -474,8 +466,8 @@ public sealed class WorkflowExecutor(
         if (!plan.Agents.TryGetValue(ab.AgentName, out var agentDecl))
             throw new InvalidOperationException($"Agent '{ab.AgentName}' not found in plan.");
 
-        var binding  = modelBindings.Resolve(agentDecl.LogicalModelName, providerName);
-        var provider = providers.Resolve(binding.ProviderName);
+        var provider = providers.Resolve(agentDecl.ProviderRef);
+        var modelId  = agentDecl.ModelId;
 
         MailValue? agentInput = null;
         if (ab.InputExpr is not null)
@@ -499,7 +491,7 @@ public sealed class WorkflowExecutor(
 
         var budget = new BudgetTracker(ctx.Limits);
         var runner = new AgentRunner(
-            agentDecl, provider, binding.ModelId, _auth, tools, budget,
+            agentDecl, provider, modelId, _auth, tools, budget,
             ctx.Logger, plan.Schemas, agentInput, actId, ctx.Budget,
             enums: plan.Enums, toolDecls: plan.Tools);
 

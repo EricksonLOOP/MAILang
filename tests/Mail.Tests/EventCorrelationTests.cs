@@ -25,13 +25,13 @@ public class EventCorrelationTests
             [new FieldContract("token",  MailTypeKind.String, Required: true)]);
 
         var providers = new ProviderRegistry();
-        providers.Register("simulated", new AdaptiveTokenProvider());
+        providers.Register("Sim", new AdaptiveTokenProvider());
 
-        var executor = new WorkflowExecutor(plan!, tools, providers, new ModelBindings(), ExecutionLimits.Default);
+        var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
         var input = new MailSchema("EchoRequest",
             ImmutableDictionary<string, MailValue>.Empty.Add("prompt", new MailString("corr-test")));
 
-        return await executor.RunAsync(input, "simulated", CancellationToken.None);
+        return await executor.RunAsync(input, CancellationToken.None);
     }
 
     [Fact]

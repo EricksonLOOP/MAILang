@@ -292,7 +292,8 @@ public class TypeContractTests
             enum Status { Pending, Shipped, Delivered }
             schema Order { id: String  status: Status }
             tool Noop { input { x: String } output { y: String } }
-            agent A { model M output Order tools { allow Noop } }
+            provider Sim { type simulated }
+            agent A { provider Sim model "m" output Order tools { allow Noop } }
             workflow W { input Order output Order step s { call Noop { x: input.id } save as s } finish with input }
             """;
         var (plan, errors) = MailCompiler.Compile(source, "test.mail");
@@ -308,7 +309,8 @@ public class TypeContractTests
         var source = """
             schema Request { note: Nullable<String> }
             tool Noop { input { x: String } output { y: String } }
-            agent A { model M output Request tools { allow Noop } }
+            provider Sim { type simulated }
+            agent A { provider Sim model "m" output Request tools { allow Noop } }
             workflow W { input Request output Request step s { call Noop { x: "x" } save as s } finish with input }
             """;
         var (plan, errors) = MailCompiler.Compile(source, "test.mail");
@@ -324,7 +326,8 @@ public class TypeContractTests
         var source = """
             schema Batch { items: List<String> }
             tool Noop { input { x: String } output { y: String } }
-            agent A { model M output Batch tools { allow Noop } }
+            provider Sim { type simulated }
+            agent A { provider Sim model "m" output Batch tools { allow Noop } }
             workflow W { input Batch output Batch step s { call Noop { x: "x" } save as s } finish with input }
             """;
         var (plan, errors) = MailCompiler.Compile(source, "test.mail");
@@ -340,7 +343,8 @@ public class TypeContractTests
         var source = """
             schema Req { id: String  note: String optional }
             tool Noop { input { x: String } output { y: String } }
-            agent A { model M output Req tools { allow Noop } }
+            provider Sim { type simulated }
+            agent A { provider Sim model "m" output Req tools { allow Noop } }
             workflow W { input Req output Req step s { call Noop { x: input.id } save as s } finish with input }
             """;
         var (plan, errors) = MailCompiler.Compile(source, "test.mail");
@@ -390,7 +394,8 @@ public class TypeContractTests
         var source = """
             schema Req { note: Nullable<String> }
             tool MyTool { input { note: Nullable<String> } output { ok: Bool } }
-            agent A { model M output Req tools { allow MyTool } }
+            provider Sim { type simulated }
+            agent A { provider Sim model "m" output Req tools { allow MyTool } }
             workflow W { input Req output Req step s { call MyTool { note: input.note } save as s } finish with input }
             """;
         var (plan, _) = MailCompiler.Compile(source, "test.mail");
@@ -413,7 +418,8 @@ public class TypeContractTests
         var source = """
             schema Req { note: Nullable<String> }
             tool MyTool { input { note: Nullable<String> } output { ok: Bool } }
-            agent A { model M output Req tools { allow MyTool } }
+            provider Sim { type simulated }
+            agent A { provider Sim model "m" output Req tools { allow MyTool } }
             workflow W { input Req output Req step s { call MyTool { note: input.note } save as s } finish with input }
             """;
         var (plan, _) = MailCompiler.Compile(source, "test.mail");

@@ -315,9 +315,8 @@ public class LoopRuntimeTests
         Assert.NotNull(plan);
 
         var providers = new ProviderRegistry();
-        var bindings = new ModelBindings();
-        var executor = new WorkflowExecutor(plan!, tools, providers, bindings, ExecutionLimits.Default);
-        return await executor.RunAsync(input, "sim", CancellationToken.None);
+        var executor = new WorkflowExecutor(plan!, tools, providers, ExecutionLimits.Default);
+        return await executor.RunAsync(input, CancellationToken.None);
     }
 
     [Fact]
