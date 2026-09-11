@@ -13,9 +13,3 @@ public interface IToolRegistry
     bool IsRegistered(string toolName);
 }
 
-public interface IModelBindings
-{
-    ModelBinding Resolve(string logicalName, string providerName);
-}
-
-public sealed record ModelBinding(string ProviderName, string ModelId);
