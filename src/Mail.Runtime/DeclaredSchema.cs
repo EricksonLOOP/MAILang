@@ -96,8 +96,9 @@ public static class DeclaredSchema
                 foreach (var property in element.EnumerateObject())
                 {
                     var field = schemaFields.FirstOrDefault(f => f.Name == property.Name);
-                    if (field is null || values.ContainsKey(property.Name))
-                        throw new InvalidProviderResponseException("Unknown or duplicate schema field.");
+                    if (field is null) continue; // skip extra fields the model may include
+                    if (values.ContainsKey(property.Name))
+                        throw new InvalidProviderResponseException($"Duplicate schema field '{property.Name}'.");
                     values.Add(property.Name, Parse(property.Value, field.Type, schemas, enumsMap));
                 }
                 // Verify all required fields are present
