@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-wheel:
+    name: Build wheel (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Phase 1: Windows x64
+          - os: windows-latest
+            rid: win-x64
+          # Phase 2: uncomment when Linux/macOS builds are validated
+          # - os: ubuntu-latest
+          #   rid: linux-x64
+          # - os: macos-latest
+          #   rid: osx-x64
+          # - os: macos-14
+          #   rid: osx-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Publish CLI (${{ matrix.rid }})
+        shell: bash
+        run: |
+          dotnet publish MAILang/src/Mail.Cli/Mail.Cli.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -o obj/publish/${{ matrix.rid }}
+
+      - name: Copy executable to _bin/ (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item obj/publish/${{ matrix.rid }}/Mail.Cli.exe `
+            MAILang/sdk/python/mail_runtime/_bin/Mail.Cli.exe -Force
+
+      - name: Copy executable to _bin/ (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cp obj/publish/${{ matrix.rid }}/Mail.Cli \
+             MAILang/sdk/python/mail_runtime/_bin/Mail.Cli
+          chmod +x MAILang/sdk/python/mail_runtime/_bin/Mail.Cli
+
+      - name: Build wheel
+        working-directory: MAILang/sdk/python
+        run: python -m build --wheel
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.rid }}
+          path: MAILang/sdk/python/dist/*.whl
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # for trusted publishing (OIDC)
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

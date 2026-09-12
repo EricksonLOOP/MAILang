@@ -1,0 +1,9 @@
+# CLI binaries placed here by the build script before wheel packaging
+mail_runtime/_bin/Mail.Cli
+mail_runtime/_bin/Mail.Cli.exe
+
+# Build output
+dist/
+build/
+*.egg-info/
+__pycache__/

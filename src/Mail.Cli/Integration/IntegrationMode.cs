@@ -17,8 +17,18 @@ internal static class IntegrationMode
 
     public static async Task RunAsync(CancellationToken outerCt)
     {
-        Console.InputEncoding  = Encoding.UTF8;
+        // Set output encoding so JSON is written as UTF-8 regardless of console code page.
         Console.OutputEncoding = Encoding.UTF8;
+
+        // Open stdin directly instead of using Console.InputEncoding setter.
+        // On Windows with .NET 10+, setting Console.InputEncoding recreates Console.In and
+        // can drop bytes already buffered in a piped stdin before the new reader is attached.
+        using var stdinReader = new StreamReader(
+            Console.OpenStandardInput(),
+            Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 4096,
+            leaveOpen: false);
 
         // Snapshot OS env + .env once per process; shared across all executions.
         var dotEnv = DotEnvLoader.Load();
@@ -35,7 +45,7 @@ internal static class IntegrationMode
             string? line;
             try
             {
-                line = await ReadLineLimitedAsync(Console.In, MaxLineBytes, outerCt)
+                line = await ReadLineLimitedAsync(stdinReader, MaxLineBytes, outerCt)
                     .ConfigureAwait(false);
             }
             catch (ProtocolLineLimitException ex)

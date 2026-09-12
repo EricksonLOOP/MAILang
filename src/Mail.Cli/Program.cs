@@ -6,6 +6,12 @@ using Mail.Runtime;
 using Mail.Runtime.Providers;
 using Mail.Cli;
 
+if (args.Length >= 1 && args[0].ToLowerInvariant() == "--version")
+{
+    Console.WriteLine("0.2.0");
+    return 0;
+}
+
 if (args.Length >= 1 && args[0].ToLowerInvariant() == "integrate")
 {
     await Mail.Cli.Integration.IntegrationMode.RunAsync(CancellationToken.None);
@@ -14,7 +20,7 @@ if (args.Length >= 1 && args[0].ToLowerInvariant() == "integrate")
 
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("Usage: mail <validate|run|integrate> <file.mail> [--input <json>]");
+    Console.Error.WriteLine("Usage: mail <validate|run|integrate|--version> <file.mail> [--input <json>]");
     return 2;
 }
 

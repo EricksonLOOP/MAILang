@@ -3,6 +3,10 @@ MAIL integration tests (offline — provider="simulated").
 
 Run with:
   cd sdk/python
+  python -m pytest tests/test_integration.py -v
+
+When Mail.Cli is bundled in _bin/ (wheel install), tests use it automatically.
+Override with MAIL_EXE env var to point to a custom executable for development:
   MAIL_EXE=../../release/win-x64/Mail.Cli.exe python -m pytest tests/test_integration.py -v
 
 All tests spawn the real Mail.Cli.exe process. They use the "simulated" provider
@@ -30,19 +34,43 @@ from mail_runtime import (
     RunError,
     ToolError,
 )
+from mail_runtime.runtime import _resolve_cli
 
 # ── Executable discovery ──────────────────────────────────────────────────────
 
 _SCRIPT_DIR = pathlib.Path(__file__).parent
-# tests/ → python/ → sdk/ → MAIL/ (project root)
+# tests/ → python/ → sdk/ → MAILang/ (project root)
 _PROJECT_ROOT = (_SCRIPT_DIR / "../../..").resolve()
-_DEFAULT_EXE = _PROJECT_ROOT / "release/win-x64/Mail.Cli.exe"
-_EXE = os.environ.get("MAIL_EXE", str(_DEFAULT_EXE))
-_EXE_FOUND = pathlib.Path(_EXE).exists()
+
+_MAIL_EXE_OVERRIDE = os.environ.get("MAIL_EXE")
+if _MAIL_EXE_OVERRIDE:
+    _EXE = _MAIL_EXE_OVERRIDE
+    _EXE_FOUND = pathlib.Path(_EXE).exists()
+else:
+    try:
+        _EXE = str(_resolve_cli())
+        _EXE_FOUND = True
+    except Exception:
+        # Fall back to the legacy development path when the package is not installed as a wheel
+        _DEFAULT_EXE = _PROJECT_ROOT / "release/win-x64/Mail.Cli.exe"
+        _EXE = str(_DEFAULT_EXE)
+        _EXE_FOUND = pathlib.Path(_EXE).exists()
+
+# Whether the bundled binary is available (in _bin/), independent of MAIL_EXE override
+try:
+    _BUNDLED_EXE = str(_resolve_cli())
+    _BUNDLED_FOUND = True
+except Exception:
+    _BUNDLED_FOUND = False
 
 skip_no_exe = pytest.mark.skipif(
     not _EXE_FOUND,
-    reason=f"MAIL_EXE not found at {_EXE}. Set MAIL_EXE env var or publish the project.",
+    reason=f"Mail CLI not found. Set MAIL_EXE env var, install the wheel, or publish from source.",
+)
+
+skip_no_bundled = pytest.mark.skipif(
+    not _BUNDLED_FOUND,
+    reason="Bundled CLI not found in _bin/. Install the platform wheel to run this test.",
 )
 
 # ── .mail file paths ──────────────────────────────────────────────────────────
@@ -374,3 +402,13 @@ async def test_import_collision_is_load_error(tmp_path):
     async with MailRuntime(_EXE) as rt:
         with pytest.raises(LoadError):
             await rt.run(str(entry), input={})
+
+
+# ── Test: bundled CLI auto-resolution ────────────────────────────────────────
+
+@skip_no_bundled
+async def test_cli_auto_resolved():
+    """MailRuntime() with no arguments must locate and start the bundled CLI."""
+    async with MailRuntime() as rt:
+        # Handshake succeeded — bundled binary was found and the protocol initialized.
+        assert rt._exe.endswith(("Mail.Cli.exe", "Mail.Cli"))

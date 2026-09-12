@@ -2,16 +2,47 @@
 
 [Manual home](README.md) · Next: [Syntax and types](syntax.md)
 
-## Build the runtime
+## Install the SDK
 
-Install the .NET 10 SDK. Python examples require Python 3.11 or later. Run commands from the `MAILang` repository directory (the directory containing `Mail.slnx`). These commands use PowerShell:
+The Python SDK bundles the MAIL CLI — installing the package is all that is required:
 
-```powershell
-dotnet build Mail.slnx
-$env:MAIL_EXE = (Resolve-Path src/Mail.Cli/bin/Debug/net10.0/Mail.Cli.exe).Path
+```bash
+pip install mail-runtime
 ```
 
-On Linux/macOS the apphost is `src/Mail.Cli/bin/Debug/net10.0/Mail.Cli` without `.exe`; set `MAIL_EXE` to its absolute path. The Python SDK needs an executable path, not a command string such as `dotnet Mail.Cli.dll`.
+Python 3.11 or later is required. Platform wheels are published for Windows x64. Linux and macOS wheels will be added in future releases; on those platforms you can install from source (see below).
+
+After installation the CLI is immediately available through the SDK:
+
+```python
+from mail_runtime import MailRuntime
+
+async with MailRuntime() as rt:
+    result = await rt.run("workflow.mail", input={...})
+```
+
+## Build from source (contributors / unsupported platforms)
+
+Install the .NET 10 SDK. Run commands from the `MAILang` repository directory (the directory containing `Mail.slnx`):
+
+```powershell
+# Windows — build and set MAIL_EXE for the SDK
+dotnet build Mail.slnx
+$env:MAIL_EXE = (Resolve-Path src/Mail.Cli/bin/Debug/net10.0/Mail.Cli.exe).Path
+pip install -e sdk/python
+```
+
+On Linux/macOS set `MAIL_EXE` to `src/Mail.Cli/bin/Debug/net10.0/Mail.Cli` (no `.exe` extension). Pass it as an override when constructing the runtime:
+
+```python
+import os
+from mail_runtime import MailRuntime
+
+async with MailRuntime(executable_path=os.environ["MAIL_EXE"]) as rt:
+    ...
+```
+
+The Python SDK needs an absolute path to the executable, not a command string such as `dotnet Mail.Cli.dll`.
 
 ## Write a first workflow
 
@@ -44,14 +75,13 @@ Validation prints `No errors found.` The run prints this JSON to stdout, with ex
 
 ## Connect real tool implementations
 
-Set the local SDK path and run the offline tutorials:
+Run the offline tutorials (requires the SDK installed or `MAIL_EXE` set as described above):
 
-```powershell
-$env:PYTHONPATH = (Resolve-Path sdk/python).Path
+```bash
 python examples/docs/run.py
 ```
 
-Alternatively, install the SDK with `python -m pip install -e sdk/python`. The runner registers an `Echo` callback and an asynchronous `Increment` callback, then checks a direct tool call, an agent, both routing branches, loop completion, and an expected iteration-limit failure. It requires no API key.
+The runner registers an `Echo` callback and an asynchronous `Increment` callback, then checks a direct tool call, an agent, both routing branches, loop completion, and an expected iteration-limit failure. It requires no API key.
 
 A tool declaration is a contract, not Python code. `register_tool("Echo", callback)` connects that contract to a function. A direct `call Echo` is deterministic; an `agent` asks a model provider to choose tool calls and produce a result. The tutorial's simulated provider calls the available tool and returns its result.
 

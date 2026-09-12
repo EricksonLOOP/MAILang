@@ -14,6 +14,8 @@ import asyncio
 import inspect
 import json
 import os
+import pathlib
+import sys
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +25,40 @@ from .protocol import Diagnostic, FieldContract, ToolContract
 
 _PROTOCOL_VERSION = 1
 
+
+def _resolve_cli() -> pathlib.Path:
+    """Return the absolute path to the bundled Mail.Cli executable.
+
+    Raises ProcessError with a clear message if the platform is unsupported
+    or the binary is missing (e.g. incomplete installation).
+    """
+    bin_dir = pathlib.Path(__file__).parent / "_bin"
+
+    if sys.platform == "win32":
+        exe = bin_dir / "Mail.Cli.exe"
+    elif sys.platform in ("linux", "darwin"):
+        exe = bin_dir / "Mail.Cli"
+    else:
+        raise ProcessError(
+            f"Platform '{sys.platform}' is not supported by the bundled MAIL CLI. "
+            "Supported platforms: Windows x64, Linux x64, macOS x64/arm64. "
+            "Install from source and pass executable_path= to MailRuntime() instead."
+        )
+
+    if not exe.exists():
+        raise ProcessError(
+            f"MAIL CLI executable not found at {exe}. "
+            "The package may be incomplete or installed for a different platform. "
+            "Try: pip install --force-reinstall mail-runtime"
+        )
+
+    # Zip extraction (pip wheel install) does not preserve the executable bit on POSIX.
+    if sys.platform != "win32" and not os.access(exe, os.X_OK):
+        os.chmod(exe, 0o755)
+
+    return exe
+
+
 # Known FieldContract fields — used to filter server messages so new server fields
 # don't cause TypeError when passed to FieldContract(**f).
 _FC_FIELDS = frozenset({"name", "kind", "required", "nullable", "enum_symbols",
@@ -30,8 +66,8 @@ _FC_FIELDS = frozenset({"name", "kind", "required", "nullable", "enum_symbols",
 
 
 class MailRuntime:
-    def __init__(self, executable_path: str) -> None:
-        self._exe   = executable_path
+    def __init__(self, executable_path: str | None = None) -> None:
+        self._exe = executable_path if executable_path is not None else str(_resolve_cli())
         self._tools: dict[str, Callable] = {}
 
         self._proc: asyncio.subprocess.Process | None = None

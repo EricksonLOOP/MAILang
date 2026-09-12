@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mail-runtime"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python SDK for the MAIL agent orchestration runtime"
 requires-python = ">=3.11"
 dependencies = []
@@ -14,6 +14,9 @@ test = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
 ]
+
+[tool.setuptools.package-data]
+mail_runtime = ["_bin/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
