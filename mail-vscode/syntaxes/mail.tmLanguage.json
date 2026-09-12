@@ -7,11 +7,20 @@
     { "include": "#comments" },
     { "include": "#strings-triple" },
     { "include": "#strings-single" },
+    { "include": "#operators-comparison" },
+    { "include": "#operators-arrow" },
+    { "include": "#operators-interpolation" },
     { "include": "#member-access" },
     { "include": "#keywords-declaration" },
     { "include": "#keywords-control" },
     { "include": "#keywords-other" },
+    { "include": "#storage-modifier" },
+    { "include": "#builtins" },
+    { "include": "#keywords-provider" },
+    { "include": "#constants-language" },
+    { "include": "#operators-logical" },
     { "include": "#types-primitive" },
+    { "include": "#operators-assignment" },
     { "include": "#type-names" },
     { "include": "#punctuation" }
   ],
@@ -36,29 +45,63 @@
         { "name": "constant.character.escape.mail", "match": "\\\\([\"\\\\\/bfnrt]|u[0-9A-Fa-f]{4})" }
       ]
     },
+    "operators-comparison": {
+      "name": "keyword.operator.comparison.mail",
+      "match": "==|!=|<=|>=|<|>"
+    },
+    "operators-arrow": {
+      "name": "keyword.operator.arrow.mail",
+      "match": "->"
+    },
+    "operators-interpolation": {
+      "name": "variable.other.interpolation.mail",
+      "match": "\\$[a-zA-Z_][a-zA-Z0-9_]*"
+    },
     "member-access": {
-      "comment": "Dotted expressions like input.order_id or result.status — must come before keyword rules so 'input.x' is consumed whole",
       "name": "variable.other.readwrite.mail",
       "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)+"
     },
     "keywords-declaration": {
       "name": "keyword.declaration.mail",
-      "match": "\\b(import|schema|tool|agent|workflow)\\b"
+      "match": "\\b(import|schema|enum|tool|agent|workflow|provider)\\b"
     },
     "keywords-control": {
       "name": "keyword.control.mail",
-      "match": "\\b(step|call|finish|with)\\b"
+      "match": "\\b(step|call|finish|with|if|else|loop|break|continue)\\b"
     },
     "keywords-other": {
       "name": "keyword.other.mail",
-      "match": "\\b(input|output|save|as|context|tools|allow|model|system)\\b"
+      "match": "\\b(input|output|save|as|context|tools|allow|model|system|require|then|when|max|params)\\b"
+    },
+    "storage-modifier": {
+      "name": "storage.modifier.mail",
+      "match": "\\boptional\\b"
+    },
+    "builtins": {
+      "name": "support.function.builtin.mail",
+      "match": "\\benv\\b"
+    },
+    "keywords-provider": {
+      "name": "keyword.other.provider.mail",
+      "match": "\\b(base_url|api_key|finish_reason)\\b"
+    },
+    "constants-language": {
+      "name": "constant.language.mail",
+      "match": "\\b(true|false)\\b"
+    },
+    "operators-logical": {
+      "name": "keyword.operator.logical.mail",
+      "match": "\\b(not|and|or)\\b"
     },
     "types-primitive": {
       "name": "support.type.primitive.mail",
-      "match": "\\b(String|Bool|Int)\\b"
+      "match": "\\b(String|Bool|Int|Decimal|List|Nullable)\\b"
+    },
+    "operators-assignment": {
+      "name": "keyword.operator.assignment.mail",
+      "match": "(?<!=)=(?!=)"
     },
     "type-names": {
-      "comment": "PascalCase identifiers — schema names, agent names, tool names, workflow names",
       "name": "entity.name.type.mail",
       "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
     },

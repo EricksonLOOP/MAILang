@@ -1,9 +1,10 @@
 {
   "name": "mail-language",
   "displayName": "MAIL Language",
-  "description": "Syntax highlighting for the MAIL agent orchestration DSL",
-  "version": "0.0.1",
+  "description": "Syntax highlighting for the MAILang agent orchestration DSL",
+  "version": "0.0.3",
   "publisher": "mail-project",
+  "icon": "images/thubnail.png",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -14,9 +15,18 @@
     "languages": [
       {
         "id": "mail",
-        "aliases": ["MAIL", "mail"],
-        "extensions": [".mail"],
-        "configuration": "./language-configuration.json"
+        "aliases": [
+          "MAIL",
+          "mail"
+        ],
+        "extensions": [
+          ".mail"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/icon.png",
+          "dark": "./images/icon.png"
+        }
       }
     ],
     "grammars": [
