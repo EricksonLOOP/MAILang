@@ -1,4 +1,4 @@
-# CLI and Python SDK
+# CLI and SDKs
 
 [Manual home](README.md) · [C# embedding](csharp.md) · [Protocol](protocol.md)
 
@@ -97,6 +97,15 @@ Diagnostic objects contain `severity`, `code`, and `message`; currently protocol
 To cancel, create an `asyncio.Task` for `runtime.run(...)`, cancel that task, and handle `asyncio.CancelledError`. The SDK sends a cancellation request. Already-running synchronous callbacks cannot be forcibly interrupted and may still complete. The SDK exposes no public event callback, `load`, pause, or resume API. Runtime events arrive in a batch and are ignored by the current SDK.
 
 Handshake timeout is 10 seconds; load timeout is 30 seconds. Integration runs use a 5-minute execution timeout, 10 model calls and 20 tool calls per agent, with shared aggregate limits described in [runtime behavior](runtime.md).
+
+## Java SDK
+
+The [Java SDK](../sdk/java/README.md) supports Java 17+, synchronous and asynchronous
+tool callbacks, concurrent executions, cancellation and automatic subprocess cleanup.
+It communicates with `mail integrate` using protocol v1. The Maven build can bundle
+the CLI so `MailRuntime.start()` locates and starts it without a separate installation
+or PATH configuration. See the SDK README for local Maven installation, binary
+packaging and integration tests. The artifact is not yet published to Maven Central.
 
 ## JavaScript
 
