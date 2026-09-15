@@ -44,7 +44,8 @@ Agent declaration fragment:
 
 ```text
 agent Writer {
-    model assistant
+    provider Sim
+    model "assistant"
     system "Call Echo and return its JSON result."
     input Request
     require input { input.text != "" }
@@ -56,7 +57,7 @@ agent Writer {
 
 The order is fixed: `model`, optional `system`, optional typed `input` with its predicate, mandatory `output` with its optional predicate, then mandatory `tools { ... }`. An empty `tools {}` permits an agent with no tools. Input and output use type references rather than inline field blocks. See the complete [agent.mail](../examples/docs/agent.mail).
 
-`model assistant` is a logical binding name, not a quoted provider model ID. The host maps it to a registered provider and concrete model. Multiple agents can share a binding. Provider selection and credentials live in the host configuration.
+`provider Sim` references a declared `provider` block in the same file (or via an import alias). `model "assistant"` is the literal model ID string forwarded to that provider. Multiple agents can share one `provider` block. See [Providers](providers.md) for simulated and HTTP provider declarations.
 
 `system` accepts one ordinary or triple-quoted string. Empty/whitespace-only prompts and duplicate system properties are rejected. The runtime appends its own instructions for using tools and returning JSON. Without `system`, it supplies a default prompt. Prompt text is literal: it does not interpolate workflow bindings.
 

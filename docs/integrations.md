@@ -36,27 +36,52 @@ The standalone tool registry supplies a special `GenerateToken` implementation a
 
 ## Python SDK
 
-Install from the repository with `python -m pip install -e sdk/python`, or set `PYTHONPATH` as in [getting started](getting-started.md). There are no required third-party runtime dependencies.
+### Installation
 
-The public API is:
+**Bundled CLI (default):** Install from PyPI and no further setup is required:
+
+```bash
+pip install mail-runtime
+```
+
+The package includes a platform-specific CLI binary resolved automatically at runtime. Supported platforms: Windows x64, Linux x64, macOS x64/arm64. On an unsupported platform `MailRuntime()` raises `ProcessError` with a descriptive message.
+
+**From source (contributors / unsupported platforms):** Build the CLI and point the SDK at it:
+
+```powershell
+dotnet build Mail.slnx
+$env:MAIL_EXE = (Resolve-Path src/Mail.Cli/bin/Debug/net10.0/Mail.Cli.exe).Path
+pip install -e sdk/python
+```
+
+Pass the path when constructing the runtime:
 
 ```python
-MailRuntime(executable_path: str, *, provider: str = "simulated")
+import os
+from mail_runtime import MailRuntime
+
+async with MailRuntime(executable_path=os.environ["MAIL_EXE"]) as rt:
+    ...
+```
+
+### Public API
+
+```python
+MailRuntime(executable_path: str | None = None)
 runtime.register_tool(name: str, fn: Callable) -> None
 await runtime.run(path: str, *, input: dict, provider_config: dict | None = None)
 ```
 
 Use `async with` to start the CLI's `integrate` subprocess, complete protocol handshake, and clean up the process. `run` resolves the path to an absolute path, loads/compiles it, checks registrations for all declared tools, then requests execution (which recompiles). The return annotation says `dict`, but scalar workflow output is returned as the corresponding decoded JSON value; the loop tutorial returns an integer.
 
-Complete callback/agent usage is in [run.py](../examples/docs/run.py). Minimal host snippet, assuming `MAIL_EXE` is configured and commands run from the repository root:
+Complete callback/agent usage is in [run.py](../examples/docs/run.py). Minimal host snippet using the bundled CLI:
 
 ```python
 import asyncio
-import os
 from mail_runtime import MailRuntime
 
 async def main():
-    async with MailRuntime(os.environ["MAIL_EXE"]) as runtime:
+    async with MailRuntime() as runtime:
         runtime.register_tool("Echo", lambda args: {"text": args["text"]})
         result = await runtime.run("examples/docs/agent.mail", input={"text": "hello"})
         print(result)  # {'text': 'hello'}
@@ -68,18 +93,38 @@ Synchronous callbacks run in a thread pool. `async def` callbacks are awaited. M
 
 ### Provider configuration
 
-The integration simulator requests the first available tool using context-derived arguments, then returns the latest tool result as final JSON. It does not interpret prompts. For deterministic multi-call behavior, pass this fragment to `run`:
+Providers and model bindings are declared in the `.mail` file using `provider` blocks; see [Providers](providers.md). HTTP providers read credentials from the OS environment or the `.env` file and need no `provider_config`.
+
+For simulated providers, pass a script to `run` so the simulator makes deterministic tool calls instead of using adaptive behavior. There are two `provider_config` shapes:
+
+**Namespaced (recommended):** works for any number of simulated providers. The key under `providers` must match the name declared in the `.mail` file; an unknown name produces MAIL-PROTO-003.
 
 ```python
-provider_config={"script": [
+provider_config={"providers": {"Sim": {"script": [
     {"type": "tool_call", "tool": "Echo", "args": {"text": "hello"}},
     {"type": "text", "template": "last_tool_result"}
-]}
+]}}}
 ```
 
-The script is consumed across model requests within that run. Exhaustion fails execution. Only `tool_call` and `text` with template `last_tool_result` are supported; arbitrary text templates are not implemented.
+**Flat (legacy):** `provider_config={"script": [...]}` is accepted only when the plan has exactly one `type simulated` provider. Raises MAIL-PROTO-002 when the count is anything other than one.
 
-For an external model, instantiate `MailRuntime(executable_path, provider="deepseek")` and pass `provider_config={"model": "YOUR_MODEL_ID"}`. Set `DEEPSEEK_API_KEY` in the environment, or supply `api_key` in the config. Integration mode defaults to `deepseek-chat` when no model is provided; it does not read CLI `appsettings.json` or use `DEEPSEEK_MODEL`. These calls require credentials and network access and are not used in the offline tutorials.
+The script is consumed across model requests within a run. Exhaustion fails execution. Only `tool_call` and `text` with `template: "last_tool_result"` are supported; arbitrary text templates are not implemented.
+
+### `.env` file
+
+The CLI and `integrate` mode both load a `.env` file from the working directory at startup. An absent file is silently ignored. This file is the standard way to supply API keys for HTTP providers without exposing them in the `.mail` source.
+
+**Format rules:**
+
+- One entry per line: `KEY=value`. The key is everything before the first `=`; the value is everything after. Keys and values are **not trimmed** — `KEY = value` produces a key with a trailing space.
+- Lines whose first non-whitespace character is `#` are full-line comments. There are no inline comments; `KEY=value # note` stores `# note` as part of the value.
+- Blank lines are ignored. UTF-8 BOM on the first character is silently stripped.
+- Double-quoted values (`KEY="value"`) support `\"` and `\\` escapes; the closing `"` must be on the same line.
+- Duplicate keys: last occurrence wins.
+- Empty string values (`KEY=` or `KEY=""`) are treated as absent.
+- **Resolution order:** OS environment variable takes precedence over the `.env` file. A variable already set in the OS environment is never overridden by the file.
+
+Errors: MAIL-ENV-001 (line missing `=`), MAIL-ENV-002 (unclosed double-quote).
 
 ### Errors and cancellation
 

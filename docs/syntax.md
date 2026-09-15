@@ -4,7 +4,7 @@
 
 ## File structure and names
 
-A file contains imports followed by declarations: `enum`, `schema`, `tool`, `agent`, and `workflow`. The entry file must declare exactly one workflow. Imported modules can declare zero or more workflows. Declarations may refer to declarations appearing later; execution bindings must already be available when used.
+A file contains imports followed by declarations: `enum`, `schema`, `tool`, `agent`, `workflow`, and `provider`. The entry file must declare exactly one workflow. Imported modules can declare zero or more workflows. Declarations may refer to declarations appearing later; execution bindings must already be available when used.
 
 Names and keywords are case-sensitive: `String` is a type, while `string` is an ordinary name. Identifiers start with a letter or underscore and continue with letters, digits, or underscores; the lexer recognizes Unicode letters. Prefer descriptive identifiers that do not reuse keywords. The parser accepts some keywords as identifiers, but expression and declaration positions can make them ambiguous.
 
@@ -77,6 +77,18 @@ The parser accepts nested type references, but runtime support varies by boundar
 | `name: Nullable<String> optional` | Yes | Yes |
 
 `optional` follows the field's type. It changes presence requirements, not the type of present values. There is no default-value syntax, null literal, null-coalescing operator, or presence-test operator. Reading an absent field can fail at runtime; normalize such values in host tools before using them in workflow expressions.
+
+## Provider declarations
+
+A `provider` block declares a model provider for use by agents. The simulated form needs no credentials:
+
+```text
+provider Sim {
+  type simulated
+}
+```
+
+The HTTP form takes `base_url`, `api_key`, `call`, and `response` blocks. See [Providers](providers.md) for the full reference.
 
 ## Expressions
 

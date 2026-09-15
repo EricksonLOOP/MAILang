@@ -63,6 +63,27 @@ Compiler diagnostics format as `[CODE] message (file:line:column)`. Imported-fil
 | `MAIL-ENTRY-WORKFLOW`, `MAIL-WORKFLOW-RECURSION` | Keep one entry workflow and remove recursive child calls |
 | `MAIL-TOOL-NAME-COLLISION` | Give tools globally unique simple names |
 | `MAIL-PROMPT-EMPTY`, `MAIL-PROMPT-DUPLICATE` | Supply one nonempty prompt after `model` |
+| `MAIL-SEM-P01` | Declare the referenced provider in the same file, or fix the import alias |
+| `MAIL-SEM-P02` | Supply a nonempty model ID string after `model` in the agent block |
+| `MAIL-SEM-P03` | Add the missing `base_url`, `api_key`, `call`, or `response` block to the HTTP provider |
+| `MAIL-SEM-P04` | Remove the duplicate header name from `call.headers` |
+| `MAIL-SEM-P05` | Remove the duplicate key from the `body` field list |
+| `MAIL-SEM-P06` | Remove the duplicate message type from the `$messages` block |
+| `MAIL-SEM-P07` | Replace the unknown `$varName` with a valid interpolation variable for this context |
+| `MAIL-SEM-P08` | Add at least `text` or `tool_calls` to the `response` block |
+| `MAIL-SEM-P09` | Fix the selector path — use dot-separated names with optional `[n]`, `[*]`, or `[k=v]` segments |
+| `MAIL-SEM-P10` | Replace the string literal with `env("VAR_NAME")` — embedding credentials is not allowed |
+| `MAIL-SEM-P11` | Add `provider ProviderName` and change `model identifier` to `model "quoted-id"` |
+| `MAIL-SEM-P12` | Move `$calls` inside an `assistant` message mapping in the `$messages` block |
+| `MAIL-ENV-001` | Add the missing `=` separator to the `.env` line, or remove it |
+| `MAIL-ENV-002` | Close the double-quoted `.env` value on the same line |
+| `MAIL-CONFIG-002` | Set the env var named in `api_key env("...")`, or add it to `.env` |
+| `MAIL-CONFIG-003` | HTTP provider supports POST only; fix or remove the `method` declaration |
+| `MAIL-PROVIDER-003` | HTTP response body exceeds 4 MiB; check the provider endpoint |
+| `MAIL-WARN` | Non-fatal; provider text selector matched multiple strings and concatenated them |
+| `MAIL-PROTO-001` | Remove `"provider"` from the `run` message — provider is declared in the `.mail` file |
+| `MAIL-PROTO-002` | Replace flat `provider_config.script` with `provider_config.providers.Name.script` |
+| `MAIL-PROTO-003` | The `provider_config.providers` key does not match any declared provider name |
 | SDK `ToolError` | Register every declared tool, even unused imports |
 | Agent output rejected | Return JSON matching declared fields/types, not Markdown fences or prose |
 | Loop exhausted or fell through | Reach `break` within `max`; ensure each executed path breaks or continues |
@@ -78,7 +99,7 @@ Always read the diagnostic text as well as its code: some lexical failures use b
 - **Enums and complex tools:** agent output parsing/schema generation currently lacks enum metadata. CLI/integration tool registration maps Decimal to String, non-primitive references to Schema, and all fields to required; optional, nullable, list, enum, and decimal tool contracts can therefore fail registration. C# hosts can supply accurate contracts, but nested metadata and model-facing tool schemas remain shallow. Tool lists of enums, for example, lack the symbols needed for validation. Treat the type showcase as compilation coverage, not a promise of all combinations at all host boundaries.
 - **Nullable serialization:** top-level `MailNull` serializes, but null values nested inside a schema/list are not handled by `SchemaConverter.ToJsonNode`. Runtime list parsing rejects null elements. Optional field access has no presence guard syntax.
 - **Contracts:** direct calls evaluate tool predicates; agent-requested calls do not. Agent tool output checks only required-field presence; direct-call output checks depend on the implementation and explicit predicate. Implement critical checks inside tools.
-- **Simulation:** simulated providers implement scripts or narrow adaptive behavior, not language-model reasoning. CLI and integration simulators differ. For arbitrary agent behavior, provide a custom C# provider or configure an external model.
+- **Simulation:** simulated providers implement scripts or narrow adaptive behavior, not language-model reasoning. CLI and integration simulators differ. For real model calls, declare an HTTP provider in the `.mail` file (see [Providers](providers.md)) or implement a custom `IModelProvider` in C#.
 - **Orchestration:** no parallel/fan-out syntax, automatic retries, persistent memory, workflow recursion, dynamic imports, package registry, pause/resume, approvals, or durable recovery. Host APIs/enums suggesting those concepts do not make them language features.
 
 ## Maintaining this manual

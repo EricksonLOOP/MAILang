@@ -14,6 +14,7 @@ This manual describes the checked-out compiler and runtime, including their curr
 ## Integrate and operate
 
 - [CLI and Python SDK](integrations.md): configuration, callbacks, errors, and cancellation.
+- [Providers](providers.md): simulated and HTTP provider declarations, body templates, response selectors.
 - [C# embedding](csharp.md): compile programs and implement tools and model providers.
 - [Integration protocol](protocol.md): UTF-8 JSON messages over standard input/output.
 - [Runtime and troubleshooting](runtime.md): execution semantics, limits, diagnostics, and capability boundaries.
@@ -31,4 +32,5 @@ Code fences marked `mail` are complete programs. Fences marked `text` and descri
 | Module resolution | [Module graph builder](../src/Mail.Compiler/Semantics/ModuleGraphBuilder.cs) |
 | Execution | [Workflow executor](../src/Mail.Runtime/WorkflowExecutor.cs), [agent runner](../src/Mail.Runtime/AgentRunner.cs) |
 | Public integration | [Python SDK](../sdk/python/mail_runtime/runtime.py), [protocol DTOs](../src/Mail.Cli/Integration/ProtocolMessages.cs) |
+| Provider runtime | [HttpModelProvider](../src/Mail.Runtime/Providers/HttpModelProvider.cs), [ProviderRegistrar](../src/Mail.Cli/ProviderRegistrar.cs) |
 | Executable behavior examples | [Compiler/runtime tests](../tests/Mail.Tests), [SDK tests](../sdk/python/tests/test_integration.py) |
