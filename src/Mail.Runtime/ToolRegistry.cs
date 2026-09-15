@@ -7,7 +7,8 @@ public sealed class ToolRegistry : IToolRegistry
     private sealed record ToolEntry(
         IToolImplementation Implementation,
         FieldContract[] InputContract,
-        FieldContract[] OutputContract);
+        FieldContract[] OutputContract,
+        bool HostExecuted);
 
     private readonly Dictionary<string, ToolEntry> _tools = new(StringComparer.Ordinal);
 
@@ -15,8 +16,18 @@ public sealed class ToolRegistry : IToolRegistry
         string name,
         IToolImplementation implementation,
         FieldContract[] inputContract,
-        FieldContract[] outputContract) =>
-        _tools[name] = new ToolEntry(implementation, inputContract, outputContract);
+        FieldContract[] outputContract,
+        bool hostExecuted = false) =>
+        _tools[name] = new ToolEntry(implementation, inputContract, outputContract, hostExecuted);
+
+    public bool IsHostExecuted(string toolName) =>
+        _tools.TryGetValue(toolName, out var e) && e.HostExecuted;
+
+    public IEnumerable<string> HostExecutedNames =>
+        _tools.Where(kv => kv.Value.HostExecuted).Select(kv => kv.Key);
+
+    public IEnumerable<string> ClientExecutedNames =>
+        _tools.Where(kv => !kv.Value.HostExecuted).Select(kv => kv.Key);
 
     public IToolImplementation Resolve(string toolName)
     {
