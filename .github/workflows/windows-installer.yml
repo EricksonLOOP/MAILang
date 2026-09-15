@@ -1,0 +1,29 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+      - name: Locate repository and build installer
+        shell: pwsh
+        run: |
+          $script = if (Test-Path 'installer/windows/build.ps1') {
+            './installer/windows/build.ps1'
+          } else {
+            './MAILang/installer/windows/build.ps1'
+          }
+          & $script
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mailang-windows-x64-installer
+          path: '**/artifacts/installer/*-setup.exe'
+          if-no-files-found: error

@@ -3,6 +3,12 @@
 # MAIL — Multi-Agent Infrastructure Language
 A declarative language for designing, connecting, governing, and executing AI agents.
 
+## Windows installer
+
+The [Windows installer build](installer/windows/README.md) packages the standalone
+CLI as `mailang`, adds it to the user's PATH, and supports upgrades and uninstall.
+It bundles the .NET runtime, so end users do not need a development SDK.
+
 ## Documentation
 
 Start with the [MAILang developer manual](docs/README.md):
