@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\src\Mail.Compiler\Mail.Compiler.csproj" />
     <ProjectReference Include="..\..\src\Mail.Runtime\Mail.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Mail.Cli\Mail.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Mail.Mcp\Mail.Mcp.csproj" />
   </ItemGroup>
 
 </Project>

@@ -3,6 +3,7 @@
     <Project Path="src/Mail.Cli/Mail.Cli.csproj" />
     <Project Path="src/Mail.Compiler/Mail.Compiler.csproj" />
     <Project Path="src/Mail.Contracts/Mail.Contracts.csproj" />
+    <Project Path="src/Mail.Mcp/Mail.Mcp.csproj" />
     <Project Path="src/Mail.Runtime/Mail.Runtime.csproj" />
   </Folder>
   <Folder Name="/tests/">
