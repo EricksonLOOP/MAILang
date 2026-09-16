@@ -86,10 +86,13 @@ Each body entry is `"key" value`. A value is one of:
 - Integer literal: `128`
 - Boolean: `true` or `false`
 - Nested object: `{ "key" value ... }`
+- Array literal: `[ item item ... ]` — items optionally separated by commas; may contain any value type including nested arrays and objects
 - Interpolation: `$varName`
 - Structured interpolation: `$messages { ... }`, `$tools { ... }`, `$calls { ... }`
+- Spread (inside `[ ]` only): `...$calls { ... }` — expands each tool call in the current assistant message as a separate element; zero elements when there are no calls
+- Conditional element (inside `[ ]` only): `?$text { ... }` — emits the element object only when the message text is non-null and non-empty
 
-The parser does not support array literals; arrays are produced only through `$messages`, `$tools`, and `$calls`. Duplicate body keys are rejected (MAIL-SEM-P05).
+Duplicate body keys are rejected (MAIL-SEM-P05). Nested arrays are never flattened; `[ [ 1 2 ] ]` produces an array containing an array.
 
 ### Interpolation variables
 
@@ -115,9 +118,12 @@ Interpolations are context-sensitive. `$messages`, `$tools`, and `$calls` open a
 | `$result` | `tool_result` | Tool result as a parsed JSON node |
 | `$result_json` | `tool_result` | Tool result as a JSON string |
 | `$calls { "key" value ... }` | `assistant` only | Array of tool call objects; omitted when the message has no tool calls |
+| `...$calls { ... }` (inside `[ ]`) | `assistant` only | Spreads tool calls as individual array elements; zero elements when none |
+| `?$text { ... }` (inside `[ ]`) | `system`, `user`, `assistant` | Emits the element object only when text is non-null and non-empty |
 
 `$text` is not a valid variable for `tool_result`; use `$result` or `$result_json` instead (MAIL-SEM-P07).  
-`$calls` is only valid inside the `assistant` message mapping (MAIL-SEM-P12).  
+`$calls` and `...$calls` are only valid inside the `assistant` message mapping (MAIL-SEM-P12, MAIL-SEM-P13).  
+`?$text` is not valid inside `tool_result` mappings (MAIL-SEM-P14).  
 Duplicate message type keys in a `$messages` block are rejected (MAIL-SEM-P06).
 
 **Inside `$tools { ... }` item template** (one object rendered per available tool):
@@ -226,10 +232,47 @@ agent Writer {
 | `MAIL-SEM-P10` | `api_key` uses a string literal instead of `env("VAR")` |
 | `MAIL-SEM-P11` | Agent uses old `model identifier` syntax without a `provider` line |
 | `MAIL-SEM-P12` | `$calls` used outside an `assistant` message mapping |
+| `MAIL-SEM-P13` | `...$calls` used outside an `assistant` message mapping |
+| `MAIL-SEM-P14` | `?$text` used in a `tool_result` mapping or at root body level |
 | `MAIL-CONFIG-002` | API key env var is absent or empty at runtime |
 | `MAIL-CONFIG-003` | HTTP provider method is not POST |
 | `MAIL-PROVIDER-003` | HTTP response body exceeds 4 MiB |
 | `MAIL-WARN` | Text selector matched multiple strings; concatenated with newline |
+
+## Anthropic native Messages API
+
+The `examples/providers/anthropic.mail` file contains a ready-to-use Anthropic provider. It uses array literals, spread, and conditional elements to meet Anthropic's content-block format:
+
+```mail
+assistant -> {
+  "role"    "assistant"
+  "content" [
+    ?$text { "type" "text" "text" $text }
+    ...$calls {
+      "type"  "tool_use"
+      "id"    $call_id
+      "name"  $tool_name
+      "input" $args
+    }
+  ]
+}
+tool_result -> {
+  "role"    "user"
+  "content" [
+    {
+      "type"        "tool_result"
+      "tool_use_id" $call_id
+      "content"     $result_json
+    }
+  ]
+}
+```
+
+**Scope:** supports text messages and JSON tool cycles (call → result → response). Tool arguments must be JSON objects.
+
+**Limitations:**
+- `thinking` content blocks are not preserved — the `ModelResponse` contract does not carry them.
+- When the model returns interleaved text and tool_use blocks (e.g., text, tool_use, text), the original order is not maintained. The template always serializes text before tool_use blocks in the assistant content array.
 
 ## Complete example
 
