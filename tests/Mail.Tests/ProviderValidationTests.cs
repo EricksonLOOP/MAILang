@@ -490,4 +490,127 @@ public class ProviderValidationTests
         Assert.NotNull(plan);
         Assert.Empty(plan!.Providers);
     }
+
+    // ── P13 — ...$calls outside assistant mapping ─────────────────────────────
+
+    private static string MakeMessageProvider(string mappingType, string bodyValue) => MinWorkflow + $$"""
+        provider P {
+            base_url "https://x.com"
+            api_key env("K")
+            call {
+                method POST
+                path "/api"
+                headers { }
+                body {
+                    "messages" $messages {
+                        {{mappingType}} -> { "role" "x" "content" {{bodyValue}} }
+                    }
+                }
+            }
+            response { text "r" }
+        }
+        """;
+
+    [Fact]
+    public void P13_spread_calls_in_user_mapping_is_error()
+    {
+        var source = MakeMessageProvider("user", "[ ...$calls { \"type\" \"tool_use\" } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P13");
+    }
+
+    [Fact]
+    public void P13_spread_calls_in_tool_result_mapping_is_error()
+    {
+        var source = MakeMessageProvider("tool_result", "[ ...$calls { \"type\" \"tool_use\" } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P13");
+    }
+
+    [Fact]
+    public void P13_spread_calls_in_assistant_mapping_is_valid()
+    {
+        var source = MakeMessageProvider("assistant", "[ ...$calls { \"type\" \"tool_use\" \"id\" $call_id \"name\" $tool_name } ]");
+        var errors = Errors(source);
+        Assert.DoesNotContain(errors, e => e.Code == "MAIL-SEM-P13");
+    }
+
+    // ── P14 — ?$text outside allowed message contexts ─────────────────────────
+
+    [Fact]
+    public void P14_conditional_text_in_tool_result_mapping_is_error()
+    {
+        var source = MakeMessageProvider("tool_result", "[ ?$text { \"type\" \"text\" } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P14");
+    }
+
+    [Fact]
+    public void P14_conditional_text_in_assistant_mapping_is_valid()
+    {
+        var source = MakeMessageProvider("assistant", "[ ?$text { \"type\" \"text\" \"text\" $text } ]");
+        var errors = Errors(source);
+        Assert.DoesNotContain(errors, e => e.Code == "MAIL-SEM-P14");
+    }
+
+    [Fact]
+    public void P14_conditional_text_in_user_mapping_is_valid()
+    {
+        var source = MakeMessageProvider("user", "[ ?$text { \"type\" \"text\" \"text\" $text } ]");
+        var errors = Errors(source);
+        Assert.DoesNotContain(errors, e => e.Code == "MAIL-SEM-P14");
+    }
+
+    // ── P05 — duplicate keys in spread / conditional templates ────────────────
+
+    [Fact]
+    public void P05_duplicate_key_in_spread_calls_template_is_error()
+    {
+        var source = MakeMessageProvider("assistant",
+            "[ ...$calls { \"type\" \"tool_use\" \"type\" \"dup\" } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P05");
+    }
+
+    [Fact]
+    public void P05_duplicate_key_in_conditional_text_template_is_error()
+    {
+        var source = MakeMessageProvider("assistant",
+            "[ ?$text { \"type\" \"text\" \"type\" \"dup\" } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P05");
+    }
+
+    // ── P07 — out-of-scope variables in spread / conditional templates ─────────
+
+    [Fact]
+    public void P07_text_variable_in_spread_calls_template_is_error()
+    {
+        // $text is not a CallsTemplate variable
+        var source = MakeMessageProvider("assistant",
+            "[ ...$calls { \"type\" \"tool_use\" \"content\" $text } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P07");
+    }
+
+    [Fact]
+    public void P07_call_id_in_conditional_text_template_in_assistant_is_error()
+    {
+        // $call_id is not valid in assistant context (AssistantVars = { text })
+        var source = MakeMessageProvider("assistant",
+            "[ ?$text { \"id\" $call_id } ]");
+        var errors = Errors(source);
+        Assert.Contains(errors, e => e.Code == "MAIL-SEM-P07");
+    }
+
+    // ── Array in tool_result with nested objects ───────────────────────────────
+
+    [Fact]
+    public void Array_with_nested_object_in_tool_result_mapping_is_valid()
+    {
+        var source = MakeMessageProvider("tool_result",
+            "[ { \"type\" \"tool_result\" \"tool_use_id\" $call_id \"content\" $result_json } ]");
+        var errors = Errors(source);
+        Assert.Empty(errors);
+    }
 }

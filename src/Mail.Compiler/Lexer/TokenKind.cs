@@ -64,6 +64,9 @@ public enum TokenKind
     Arrow,     // ->
     Dollar,    // $
     Plus,      // +
+    LBracket,  // [
+    RBracket,  // ]
+    Question,  // ?
 
     // String literals
     StringLiteral,

@@ -117,6 +117,10 @@ public sealed record InterpolationBodyValue(string VarName) : BodyValue;
 public sealed record MessagesBodyValue(IReadOnlyList<MessageMappingDecl> Mappings) : BodyValue;
 public sealed record ToolsBodyValue(IReadOnlyList<BodyFieldDecl> ItemTemplate) : BodyValue;
 public sealed record CallsBodyValue(IReadOnlyList<BodyFieldDecl> ItemTemplate) : BodyValue;
+// Spread inside array literal: ...$calls { template } — one element per tool call; zero when none
+public sealed record SpreadCallsBodyValue(IReadOnlyList<BodyFieldDecl> ItemTemplate) : BodyValue;
+// Conditional inside array literal: ?$text { template } — emits element only when text is non-null and non-empty
+public sealed record ConditionalTextBodyValue(IReadOnlyList<BodyFieldDecl> Template) : BodyValue;
 
 public sealed record MessageMappingDecl(
     string MessageType,

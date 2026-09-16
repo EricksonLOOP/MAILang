@@ -487,6 +487,224 @@ public class ProviderParserTests
         Assert.Equal("name", ((InterpolationBodyValue)tools.ItemTemplate[0].Value).VarName);
     }
 
+    // ── Lexer: new tokens ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void Lexer_recognizes_lbracket()
+    {
+        var (tokens, errors) = new Lexer("[", "test.mail").Tokenize();
+        Assert.Empty(errors);
+        Assert.Equal(TokenKind.LBracket, tokens[0].Kind);
+    }
+
+    [Fact]
+    public void Lexer_recognizes_rbracket()
+    {
+        var (tokens, errors) = new Lexer("]", "test.mail").Tokenize();
+        Assert.Empty(errors);
+        Assert.Equal(TokenKind.RBracket, tokens[0].Kind);
+    }
+
+    [Fact]
+    public void Lexer_recognizes_question()
+    {
+        var (tokens, errors) = new Lexer("?", "test.mail").Tokenize();
+        Assert.Empty(errors);
+        Assert.Equal(TokenKind.Question, tokens[0].Kind);
+    }
+
+    // ── Array literal parsing (positive) ─────────────────────────────────────
+
+    private const string ArrayScaffold = """
+        schema R { x: String }
+        workflow W { input R output R finish with input }
+        provider P {
+            base_url "https://x.com"
+            api_key env("K")
+            call {
+                method POST
+                path "/api"
+                headers { }
+                body {
+        """;
+    private const string ArrayScaffoldClose = """
+                }
+            }
+            response { text "result" }
+        }
+        """;
+
+    [Fact]
+    public void Parser_parses_array_literal_with_primitives()
+    {
+        var source = ArrayScaffold + """
+                "items" [ "a" "b" "c" ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var field = prov.Call!.Body.Single(f => f.Key == "items");
+        var arr = Assert.IsType<ArrayBodyValue>(field.Value);
+        Assert.Equal(3, arr.Items.Count);
+        Assert.All(arr.Items, item => Assert.IsType<StringBodyValue>(item));
+    }
+
+    [Fact]
+    public void Parser_parses_array_with_object_elements()
+    {
+        var source = ArrayScaffold + """
+                "arr" [ { "k" "v" } { "k" "v2" } ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var arr = Assert.IsType<ArrayBodyValue>(prov.Call!.Body.Single(f => f.Key == "arr").Value);
+        Assert.Equal(2, arr.Items.Count);
+        Assert.All(arr.Items, item => Assert.IsType<ObjectBodyValue>(item));
+    }
+
+    [Fact]
+    public void Parser_parses_nested_array_without_flattening()
+    {
+        var source = ArrayScaffold + """
+                "outer" [ [ 1 2 ] [ 3 ] ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var outer = Assert.IsType<ArrayBodyValue>(prov.Call!.Body.Single(f => f.Key == "outer").Value);
+        Assert.Equal(2, outer.Items.Count);
+        Assert.All(outer.Items, item => Assert.IsType<ArrayBodyValue>(item));
+        Assert.Equal(2, ((ArrayBodyValue)outer.Items[0]).Items.Count);
+        Assert.Single(((ArrayBodyValue)outer.Items[1]).Items);
+    }
+
+    [Fact]
+    public void Parser_parses_empty_array()
+    {
+        var source = ArrayScaffold + """
+                "empty" [ ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var arr = Assert.IsType<ArrayBodyValue>(prov.Call!.Body.Single(f => f.Key == "empty").Value);
+        Assert.Empty(arr.Items);
+    }
+
+    [Fact]
+    public void Parser_parses_spread_calls_inside_array()
+    {
+        var source = ArrayScaffold + """
+                "content" [
+                    ...$calls {
+                        "type" "tool_use"
+                        "id"   $call_id
+                    }
+                ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var arr = Assert.IsType<ArrayBodyValue>(prov.Call!.Body.Single(f => f.Key == "content").Value);
+        Assert.Single(arr.Items);
+        var spread = Assert.IsType<SpreadCallsBodyValue>(arr.Items[0]);
+        Assert.Equal(2, spread.ItemTemplate.Count);
+    }
+
+    [Fact]
+    public void Parser_parses_conditional_text_inside_array()
+    {
+        var source = ArrayScaffold + """
+                "content" [
+                    ?$text { "type" "text" "text" $text }
+                ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var arr = Assert.IsType<ArrayBodyValue>(prov.Call!.Body.Single(f => f.Key == "content").Value);
+        Assert.Single(arr.Items);
+        var cond = Assert.IsType<ConditionalTextBodyValue>(arr.Items[0]);
+        Assert.Equal(2, cond.Template.Count);
+    }
+
+    [Fact]
+    public void Parser_parses_conditional_and_spread_together()
+    {
+        var source = ArrayScaffold + """
+                "content" [
+                    ?$text { "type" "text" "text" $text }
+                    ...$calls { "type" "tool_use" "id" $call_id }
+                ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var prov = program!.Declarations.OfType<ProviderDecl>().Single();
+        var arr = Assert.IsType<ArrayBodyValue>(prov.Call!.Body.Single(f => f.Key == "content").Value);
+        Assert.Equal(2, arr.Items.Count);
+        Assert.IsType<ConditionalTextBodyValue>(arr.Items[0]);
+        Assert.IsType<SpreadCallsBodyValue>(arr.Items[1]);
+    }
+
+    [Fact]
+    public void Parser_parses_array_items_with_optional_commas()
+    {
+        var source = ArrayScaffold + """
+                "arr" [ "a", "b", "c" ]
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.Empty(errors);
+        var arr = Assert.IsType<ArrayBodyValue>(
+            program!.Declarations.OfType<ProviderDecl>().Single()
+                .Call!.Body.Single(f => f.Key == "arr").Value);
+        Assert.Equal(3, arr.Items.Count);
+    }
+
+    // ── Array literal parsing (negative) ─────────────────────────────────────
+
+    [Fact]
+    public void Parser_errors_on_unclosed_bracket()
+    {
+        var source = ArrayScaffold + """
+                "arr" [ "a" "b"
+            """ + ArrayScaffoldClose;
+
+        var (program, errors) = Parse(source);
+        Assert.NotNull(errors);
+        Assert.Contains(errors, e => e.Message.Contains("Unclosed '['") || e.Message.Contains("']'"));
+    }
+
+    [Fact]
+    public void Parser_errors_on_spread_with_text_instead_of_calls()
+    {
+        var source = ArrayScaffold + """
+                "arr" [ ...$text { "k" "v" } ]
+            """ + ArrayScaffoldClose;
+
+        var (_, errors) = Parse(source);
+        Assert.Contains(errors, e => e.Message.Contains("spread"));
+    }
+
+    [Fact]
+    public void Parser_errors_on_conditional_with_calls_instead_of_text()
+    {
+        var source = ArrayScaffold + """
+                "arr" [ ?$calls { "k" "v" } ]
+            """ + ArrayScaffoldClose;
+
+        var (_, errors) = Parse(source);
+        Assert.Contains(errors, e => e.Message.Contains("conditional"));
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private static (ProgramNode? Program, IReadOnlyList<Diagnostic> Errors) Parse(string source)

@@ -392,6 +392,34 @@ public sealed class SemanticValidator(string filePath, IReadOnlyDictionary<strin
                 foreach (var f in ov.Fields)
                     ValidateBodyValue(f.Value, ctx, providerName, loc);
                 break;
+
+            case ArrayBodyValue av:
+                foreach (var item in av.Items)
+                    ValidateBodyValue(item, ctx, providerName, loc);
+                break;
+
+            case SpreadCallsBodyValue sc:
+                if (ctx != BodyContext.MessageAssistant)
+                    Error("MAIL-SEM-P13",
+                        $"Provider '{providerName}': '...$calls' can only appear inside an 'assistant' message mapping.",
+                        loc);
+                ValidateBodyFieldDuplicates(sc.ItemTemplate, providerName, "...$calls template");
+                foreach (var f in sc.ItemTemplate)
+                    ValidateBodyValue(f.Value, BodyContext.CallsTemplate, providerName, loc);
+                break;
+
+            case ConditionalTextBodyValue ct:
+                var textCtxOk = ctx is BodyContext.MessageAssistant
+                                     or BodyContext.MessageUser
+                                     or BodyContext.MessageSystem;
+                if (!textCtxOk)
+                    Error("MAIL-SEM-P14",
+                        $"Provider '{providerName}': '?$text' can only appear inside a system, user, or assistant message mapping.",
+                        loc);
+                ValidateBodyFieldDuplicates(ct.Template, providerName, "?$text template");
+                foreach (var f in ct.Template)
+                    ValidateBodyValue(f.Value, ctx, providerName, loc);
+                break;
         }
     }
 

@@ -460,6 +460,64 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
         if (tok.Kind == TokenKind.True)  { Advance(); return new BoolBodyValue(true); }
         if (tok.Kind == TokenKind.False) { Advance(); return new BoolBodyValue(false); }
 
+        // Array literal: [ item* ]
+        if (tok.Kind == TokenKind.LBracket)
+        {
+            var openLoc = tok.Location;
+            Advance();
+            var items = new List<BodyValue>();
+            while (!IsKind(TokenKind.RBracket) && !IsEof())
+            {
+                // ...$calls { ... }  — three Dot tokens then Dollar
+                if (IsKind(TokenKind.Dot)
+                    && PeekKind(1) == TokenKind.Dot
+                    && PeekKind(2) == TokenKind.Dot
+                    && PeekKind(3) == TokenKind.Dollar)
+                {
+                    Advance(); Advance(); Advance(); Advance(); // consume . . . $
+                    var spreadName = ExpectIdentifier() ?? "?";
+                    if (spreadName == "calls" && IsKind(TokenKind.LBrace))
+                    {
+                        Advance();
+                        var tmpl = ParseBodyFields();
+                        Expect(TokenKind.RBrace);
+                        items.Add(new SpreadCallsBodyValue(tmpl));
+                    }
+                    else
+                    {
+                        Error("Only '...$calls { }' is supported as a spread element.", Current().Location);
+                    }
+                }
+                // ?$text { ... }
+                else if (IsKind(TokenKind.Question) && PeekKind(1) == TokenKind.Dollar)
+                {
+                    Advance(); Advance(); // consume ? $
+                    var condName = ExpectIdentifier() ?? "?";
+                    if (condName == "text" && IsKind(TokenKind.LBrace))
+                    {
+                        Advance();
+                        var tmpl = ParseBodyFields();
+                        Expect(TokenKind.RBrace);
+                        items.Add(new ConditionalTextBodyValue(tmpl));
+                    }
+                    else
+                    {
+                        Error("Only '?$text { }' is supported as a conditional element.", Current().Location);
+                    }
+                }
+                else
+                {
+                    items.Add(ParseBodyValue());
+                }
+                if (IsKind(TokenKind.Comma)) Advance();
+            }
+            if (!IsKind(TokenKind.RBracket))
+                Error("Unclosed '[': expected ']'.", openLoc);
+            else
+                Expect(TokenKind.RBracket);
+            return new ArrayBodyValue(items);
+        }
+
         Error($"Expected body value, got '{tok.Text}'.", tok.Location);
         Advance();
         return new StringBodyValue("");
@@ -1071,6 +1129,12 @@ public sealed class Parser(IReadOnlyList<Token> tokens)
     private bool IsEof() => Current().Kind == TokenKind.Eof;
 
     private bool IsKind(TokenKind kind) => Current().Kind == kind;
+
+    private TokenKind PeekKind(int offset)
+    {
+        var idx = _pos + offset;
+        return idx < tokens.Count ? tokens[idx].Kind : TokenKind.Eof;
+    }
 
     private void Advance()
     {

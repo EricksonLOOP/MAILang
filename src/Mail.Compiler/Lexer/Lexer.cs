@@ -165,6 +165,15 @@ public sealed class Lexer(string source, string filePath)
                 case '+':
                     tokens.Add(Single(TokenKind.Plus, loc));
                     break;
+                case '[':
+                    tokens.Add(Single(TokenKind.LBracket, loc));
+                    break;
+                case ']':
+                    tokens.Add(Single(TokenKind.RBracket, loc));
+                    break;
+                case '?':
+                    tokens.Add(Single(TokenKind.Question, loc));
+                    break;
                 default:
                     _errors.Add(new Diagnostic(
                         DiagnosticSeverity.Error,
