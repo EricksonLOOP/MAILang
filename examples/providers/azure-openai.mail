@@ -1,0 +1,86 @@
+schema Request { text: String }
+schema Reply   { text: String }
+
+tool Echo {
+  input  { text: String }
+  output { text: String }
+}
+
+// Azure OpenAI Service. Replace YOUR-RESOURCE and YOUR-DEPLOYMENT in base_url
+// with your actual Azure resource name and deployment name.
+// Set AZURE_OPENAI_API_KEY to your Azure OpenAI key.
+provider AzureOpenAI {
+  base_url "https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT"
+  api_key  env("AZURE_OPENAI_API_KEY")
+  call {
+    method POST
+    path   "/chat/completions?api-version=2024-08-01-preview"
+    headers {
+      "Content-Type" "application/json"
+      "api-key"      api_key
+    }
+    body {
+      "model"    $model
+      "messages" $messages {
+        system    -> { "role" "system"    "content" $text }
+        user      -> { "role" "user"      "content" $text }
+        assistant -> {
+          "role"       "assistant"
+          "content"    $text
+          "tool_calls" $calls {
+            "id"   $call_id
+            "type" "function"
+            "function" {
+              "name"      $tool_name
+              "arguments" $args_json
+            }
+          }
+        }
+        tool_result -> {
+          "role"         "tool"
+          "tool_call_id" $call_id
+          "content"      $result_json
+        }
+      }
+      "tools" $tools {
+        "type"     "function"
+        "function" {
+          "name"       $name
+          "parameters" $input_schema
+        }
+      }
+    }
+  }
+  response {
+    finish_reason {
+      path       "choices[0].finish_reason"
+      stop       "stop"
+      tool_calls "tool_calls"
+    }
+    text "choices[0].message.content"
+    tool_calls "choices[0].message.tool_calls[*]" {
+      id        "id"
+      tool_name "function.name"
+      args      "function.arguments"
+    }
+  }
+}
+
+agent Writer {
+  provider AzureOpenAI
+  model    "gpt-4o"
+  system   "Call Echo with the supplied text and return its result as JSON."
+  input    Request
+  output   Reply
+  tools    { allow Echo }
+}
+
+workflow EchoViaAgent {
+  input  Request
+  output Reply
+  step write {
+    agent Writer input input context { input }
+    save as reply
+  }
+  finish with reply
+}
