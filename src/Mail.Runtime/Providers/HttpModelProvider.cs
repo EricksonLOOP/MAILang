@@ -155,6 +155,9 @@ public sealed class HttpModelProvider(
         MessagesBodyValue msgs => EvaluateMessages(msgs, request),
         ToolsBodyValue ts  => EvaluateTools(ts, request),
         CallsBodyValue cs  => EvaluateCalls(cs, message as AssistantMessage, request),
+        // SpreadCallsBodyValue and ConditionalTextBodyValue are handled inside EvaluateArray
+        SpreadCallsBodyValue  => null,
+        ConditionalTextBodyValue => null,
         _                  => null
     };
 
@@ -167,7 +170,33 @@ public sealed class HttpModelProvider(
     {
         var arr = new JsonArray();
         foreach (var item in items)
-            arr.Add(EvaluateBodyValue(item, request, message, tool, call));
+        {
+            switch (item)
+            {
+                case SpreadCallsBodyValue sc:
+                    if (message is AssistantMessage asst && asst.ToolCalls is { Count: > 0 } toolCalls)
+                        foreach (var tc in toolCalls)
+                        {
+                            var obj = EvaluateBodyFields(sc.ItemTemplate, request, null, null, tc);
+                            if (obj is not null) arr.Add(obj);
+                        }
+                    break;
+
+                case ConditionalTextBodyValue ct:
+                    var textNode = EvaluateInterpolation("text", request, message, tool, call);
+                    var textStr = (textNode as JsonValue)?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(textStr))
+                    {
+                        var obj = EvaluateBodyFields(ct.Template, request, message, tool, call);
+                        if (obj is not null) arr.Add(obj);
+                    }
+                    break;
+
+                default:
+                    arr.Add(EvaluateBodyValue(item, request, message, tool, call));
+                    break;
+            }
+        }
         return arr;
     }
 

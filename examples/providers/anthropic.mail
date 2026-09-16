@@ -7,9 +7,10 @@ tool Echo {
 }
 
 // Anthropic native Messages API.
-// Agents without tools work fully. Agents with tools may fail on the second
-// model turn because Anthropic expects tool_result content as an array of
-// content blocks, which MAILang's template system cannot produce inline.
+// Supports text messages and JSON tool cycles (call → result → response).
+// Limitations: thinking blocks are not preserved; when the model interleaves
+// text and tool_use blocks, the original order is not maintained — text always
+// precedes tool-use blocks in the serialized assistant content.
 provider Anthropic {
   base_url "https://api.anthropic.com"
   api_key  env("ANTHROPIC_API_KEY")
@@ -29,20 +30,25 @@ provider Anthropic {
         user      -> { "role" "user"      "content" $text }
         assistant -> {
           "role"    "assistant"
-          "content" $calls {
-            "type"  "tool_use"
-            "id"    $call_id
-            "name"  $tool_name
-            "input" $args
-          }
+          "content" [
+            ?$text { "type" "text" "text" $text }
+            ...$calls {
+              "type"  "tool_use"
+              "id"    $call_id
+              "name"  $tool_name
+              "input" $args
+            }
+          ]
         }
         tool_result -> {
           "role"    "user"
-          "content" {
-            "type"        "tool_result"
-            "tool_use_id" $call_id
-            "content"     $result_json
-          }
+          "content" [
+            {
+              "type"        "tool_result"
+              "tool_use_id" $call_id
+              "content"     $result_json
+            }
+          ]
         }
       }
       "tools" $tools {
